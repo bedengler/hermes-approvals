@@ -5,6 +5,5 @@
   "icon": "ShieldCheck",
   "version": "0.1.0",
   "tab": {"path": "/approvals", "position": "after:skills"},
-  "entry": "dist/index.js",
-  "api": "plugin_api.py"
+  "entry": "dist/index.js"
 }

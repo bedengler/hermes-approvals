@@ -1,78 +1,100 @@
 # Hermes Approval API
 
-Standalone, local GitHub-ready foundation for a profile-scoped approvals surface. It
-is intentionally an integration package, not a patch to Hermes core and it does
-not publish, create remotes, or restart services.
+Standalone, profile-scoped approval API foundation for a Hermes dashboard
+integration. It is intentionally **not** a patch to Hermes core: this
+repository does not publish, create remotes, execute approvals, restart
+services, or modify `/Users/bedenglerai/.hermes/hermes-agent`.
 
-## Design
+## API contract
 
-- **Opaque IDs:** `secrets.token_urlsafe` request IDs and nonces; session IDs are
-  never exposed as identifiers in the dashboard contract.
-- **Optimistic concurrency:** every pending item has `version` + `nonce`; POST
-  requires `expected_version` (and may require `nonce`). A stale or second action
-  returns HTTP 409 and cannot execute twice.
-- **Durable history:** SQLite stores pending and resolved rows plus append-only
-  created/resolved events. The database path is supplied by the profile host.
-- **Safe explanations:** token/password/API-key/Bearer values are redacted and
-  explanation text is length bounded before persistence and display.
-- **Authorization boundary:** `create_router(..., authorize=...)` requires the
-  host's canonical dashboard authorization callback. No credentials are read or
-  minted here. The same store's `resolve_legacy_session` preserves the existing
-  Discord/TUI oldest-pending-by-session behavior during migration.
-- **Live events:** polling endpoint and WebSocket stream are provided. The host
-  should put its existing auth middleware in front of the mounted router.
+The host mounts the router at `/api/plugins/approvals`. These are router-relative
+paths; do not add the prefix twice:
 
-## API
+- `GET /api/plugins/approvals/pending?limit=1..500`
+- `GET /api/plugins/approvals/history?limit=1..500`
+- `POST /api/plugins/approvals/{request_id}/respond`
+- `GET /api/plugins/approvals/events?after_id=N&limit=1..500`
+- `WS /api/plugins/approvals/events/stream`
 
-`GET /approvals/pending` → `{profile, items[]}`
+Responses use explicit DTOs. Internal `session_id` is never returned in items,
+responses, or event payloads. Limits are positive and bounded; no unbounded or
+`LIMIT -1` query is accepted.
 
-`GET /approvals/history?limit=100` → durable resolved items
+## Security and state
 
-`POST /approvals/{request_id}/respond`
+- Explanations and source labels are redacted before persistence, including
+  shell and key/value forms of token/password/API-key credentials,
+  `client_id`/`client-id`, `client_secret`/`client-secret`, `private_key`/
+  `private-key`, `--client-secret value`, `--private-key=value`, Bearer, and
+  Basic. Quoted JSON-style credential keys are also recognized with either
+  quoted or unquoted textual values (for example, `"token":"value"` or
+  `"token":value`). Quoted values with spaces are accepted, and PEM
+  private-key blocks are consumed through their matching END marker across
+  newlines, while malformed or unterminated blocks consume the remainder of
+  the input fail-closed. This is an accepted textual policy, not an arbitrary structured
+  JSON/YAML sanitizer.
+  Text is then limited to 2,000 characters. Ordinary prose is preserved unless
+  it uses a credential-looking option or key/value/header form.
+- Hosts inject the canonical dashboard authorization callback; this package
+  does not read or mint credentials. HTTP and WebSocket access use that seam.
+  The WebSocket checks the callback before each polling pass, but revocation
+  behavior still depends on the host callback reflecting the live session
+  state; live host middleware integration is outside this package's tests.
+- Responses use opaque request IDs and compare-and-swap version checks. The
+  approval mutation and `approval.resolved` event insert commit in one SQLite
+  transaction, with database busy handling and profile scoping.
+- `store.cleanup()` is the retention mechanism: by default it deletes resolved
+  approvals after 90 days and keeps only the newest 10,000 events per profile.
+  `retention_days` must be an integer from 1 through 3,650, and `max_events`
+  must be an integer from 1 through 100,000; booleans, floats, strings, zero,
+  negatives, and values above those limits are rejected. Events are not
+  age-pruned; their retention is controlled only by `max_events`. Schedule
+  cleanup from the host maintenance job; see `MIGRATION.md`.
 
-```json
-{"decision":"approve", "expected_version":1, "nonce":"optional-nonce"}
+## Hermes host adapter boundary
+
+The actual Hermes host supports dashboard manifests with static `entry`/`css`
+assets and an optional module-level `api` router. That loader cannot safely
+inject this package's profile store and canonical authorization callback, so
+`dashboard/manifest.json` intentionally omits `api`; it does **not** claim
+automatic backend mounting. Install the static dashboard and mount the backend
+explicitly:
+
+```python
+from dashboard.plugin_api import build_router
+from hermes_approval.store import ApprovalStore
+
+store = ApprovalStore(profile_home / "approvals.db", profile=active_profile)
+router = build_router(store, dashboard_authorize)
+app.include_router(router, prefix="/api/plugins/approvals")
 ```
 
-Returns the resolved item; `403` authorization failure, `404` unknown ID, and
-`409` stale/double action. `GET /approvals/events?after_id=N` and
-`GET /approvals/events/stream` expose created/resolved events.
+The route-mounting/auth integration test is in `tests/test_api.py`. This is a
+host-adapter installation path, not live Hermes wiring.
 
-## Hermes integration boundary
-
-1. Add this directory (or its package) under a user plugin checkout.
-2. Construct `ApprovalStore(profile_home / "approvals.db", profile=active_profile)`
-   from the active Hermes profile, not a global hardcoded path.
-3. Feed the existing dashboard session authorization dependency to
-   `dashboard.plugin_api.build_router(store, dashboard_authorize)`.
-4. Make the approval manager write through `store.create`, resolve through
-   `store.respond`, and retain `resolve_legacy_session` for existing Discord and
-   `approval.respond` callers.
-5. Mount the router using the host's normal `/api/plugins/approvals` mechanism and
-   install `dashboard/` as the plugin payload. Do not bypass dashboard auth.
-
-This repository deliberately does **not** modify `/Users/bedenglerai/.hermes/hermes-agent`:
-upstream wiring needs a separate reviewed change because the current approval
-queue is private/in-memory and its resolver has no stable request ID.
-
-## Local verification
-
-From this directory (with a Python environment containing `pytest`, `fastapi`,
-and `httpx`):
+## Verification
 
 ```bash
-python3 -m pytest -q
+uv run --extra test pytest -q
 node --check dashboard/dist/index.js
 git diff --check
+uv build
 ```
 
-No production service is started by this repository.
+The wheel includes the importable `dashboard` adapter package plus
+`manifest.json` and the compiled dashboard bundle; no checkout-relative
+`dashboard/` directory is needed after installation. `tests/test_packaging.py`
+builds a wheel in a temporary directory and inspects those exact entries.
 
-## Release checklist
+`uv.lock` is retained for reproducibility.
 
-- independent security/spec review
-- integrate store with Hermes approval manager and shared auth gate
-- add real gateway/Discord adapter integration tests against a temp profile
-- verify migration and concurrent responders under SQLite load
-- package metadata/CI and choose repository identity/visibility
-- only then obtain separate publication approval
+## License
+
+This project is licensed under the Apache License, Version 2.0. See
+[`LICENSE`](LICENSE) for the complete text. Redistribution must include a copy
+of that license and retain the repository's copyright and attribution notices;
+modified files should carry prominent notices describing the changes. The
+repository does not include a `NOTICE` file because its current project
+content has no additional attribution notices requiring one. Any third-party
+notices introduced by future dependencies or contributions remain subject to
+their applicable license terms.
