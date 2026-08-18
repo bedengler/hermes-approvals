@@ -1,0 +1,10 @@
+{
+  "name": "approvals",
+  "label": "Approvals",
+  "description": "Profile-scoped pending approval review with durable history and stale-action protection",
+  "icon": "ShieldCheck",
+  "version": "0.1.0",
+  "tab": {"path": "/approvals", "position": "after:skills"},
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}
