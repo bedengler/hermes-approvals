@@ -13,6 +13,10 @@ paths; do not add the prefix twice:
 - `GET /api/plugins/approvals/pending?limit=1..500`
 - `GET /api/plugins/approvals/history?limit=1..500`
 - `POST /api/plugins/approvals/{request_id}/respond`
+- `GET /api/plugins/approvals/governance/pending?limit=1..500`
+- `GET /api/plugins/approvals/governance/history?limit=1..500`
+- `POST /api/plugins/approvals/governance/{approval_id}/respond` with
+  `{"decision":"approve"|"deny", "note":"optional"}`
 - `GET /api/plugins/approvals/events?after_id=N&limit=1..500`
 - `WS /api/plugins/approvals/events/stream`
 
@@ -40,6 +44,18 @@ responses, or event payloads. Limits are positive and bounded; no unbounded or
   The WebSocket checks the callback before each polling pass, but revocation
   behavior still depends on the host callback reflecting the live session
   state; live host middleware integration is outside this package's tests.
+ - Governance decisions are separately scoped from runtime command approvals.
+ The host adapter injects the existing governance module's `decide` function;
+ the HTTP handler never invokes a shell command. Decisions require the
+ dashboard authorization callback, exact `approval_id`, pending/TTL checks,
+ and return `404` for unknown IDs or `409` for expired/already-decided IDs.
+ The UI displays an explicit second confirmation containing the exact ID, gate,
+ target, expiry, selected decision, and server-redacted rationale. Approve/Deny
+ controls and Refresh expose pointer and keyboard-focus affordances. Refresh is
+ disabled while loading and reports loading, last-refresh/no-change, empty, and
+ safe error states. Governance actions show success, stale/expired, not-found,
+ and generic failure outcomes, then refresh pending/history without claiming a
+ change when none occurred.
 - Responses use opaque request IDs and compare-and-swap version checks. The
   approval mutation and `approval.resolved` event insert commit in one SQLite
   transaction, with database busy handling and profile scoping.
@@ -54,18 +70,14 @@ responses, or event payloads. Limits are positive and bounded; no unbounded or
 ## Hermes host adapter boundary
 
 The actual Hermes host supports dashboard manifests with static `entry`/`css`
-assets and an optional module-level `api` router. That loader cannot safely
-inject this package's profile store and canonical authorization callback, so
-`dashboard/manifest.json` intentionally omits `api`; it does **not** claim
-automatic backend mounting. Install the static dashboard and mount the backend
-explicitly:
+assets and an optional module-level `api` router. This plugin ships a small
+host adapter at `dashboard/plugin_api.py`; it binds the active profile's store
+and canonical dashboard authorization callback, so the manifest declares
+`"api": "plugin_api.py"` and Hermes mounts it automatically:
 
 ```python
-from dashboard.plugin_api import build_router
-from hermes_approval.store import ApprovalStore
+from dashboard.plugin_api import router
 
-store = ApprovalStore(profile_home / "approvals.db", profile=active_profile)
-router = build_router(store, dashboard_authorize)
 app.include_router(router, prefix="/api/plugins/approvals")
 ```
 

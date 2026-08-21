@@ -3,16 +3,27 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, field_validator
 
 from .store import MAX_PAGE_SIZE, Approval, ApprovalConflict, ApprovalNotFound, ApprovalStore
+from .governance import (
+    GovernanceApprovalConflict,
+    GovernanceApprovalNotFound,
+    GovernanceApprovalStore,
+    GovernanceDecisionService,
+)
 
 
 class ResponseBody(BaseModel):
     decision: str = Field(pattern="^(approve|deny)$")
     expected_version: int = Field(ge=1)
     nonce: str | None = None
+
+
+class GovernanceResponseBody(BaseModel):
+    decision: str = Field(pattern="^(approve|deny)$")
+    note: str = Field(default="", max_length=2000)
 
 
 class ApprovalDTO(BaseModel):
@@ -36,6 +47,7 @@ class EventDTO(BaseModel):
     payload: dict[str, Any]
     created_at: float
 
+
     @field_validator("payload", mode="before")
     @classmethod
     def remove_internal_fields(cls, payload: Any) -> dict[str, Any]:
@@ -50,6 +62,19 @@ class EventDTO(BaseModel):
         if not isinstance(sanitized, dict):
             raise TypeError("event payload must be an object")
         return sanitized
+
+
+class GovernanceApprovalDTO(BaseModel):
+    approval_id: str
+    gate: str
+    target: str
+    action: str
+    rationale: str | None = None
+    decision_note: str | None = None
+    status: str
+    created_at: str | None = None
+    expires_at: str | None = None
+    decided_at: str | None = None
 
 
 def approval_dto(approval: Approval) -> ApprovalDTO:
@@ -87,26 +112,59 @@ def event_dto(event: dict[str, Any]) -> EventDTO:
     return EventDTO(**event)
 
 
-def create_router(store: ApprovalStore, *, authorize: Callable[[], bool]) -> APIRouter:
+def create_router(
+    store: ApprovalStore,
+    *,
+    authorize: Callable[[Any], bool],
+    governance_store: GovernanceApprovalStore | None = None,
+    governance_decision_service: GovernanceDecisionService | None = None,
+) -> APIRouter:
     router = APIRouter()
 
-    def guard() -> None:
-        if not authorize():
+    def guard(connection: Any) -> None:
+        if not authorize(connection):
             raise HTTPException(403, "not authorized")
 
     @router.get("/pending")
-    def pending(limit: int = Query(500, ge=1, le=MAX_PAGE_SIZE)):
-        guard()
+    def pending(request: Request, limit: int = Query(500, ge=1, le=MAX_PAGE_SIZE)):
+        guard(request)
         return {"profile": store.profile, "items": [approval_dto(a) for a in store.list_pending(limit=limit)]}
 
     @router.get("/history")
-    def history(limit: int = Query(100, ge=1, le=MAX_PAGE_SIZE)):
-        guard()
+    def history(request: Request, limit: int = Query(100, ge=1, le=MAX_PAGE_SIZE)):
+        guard(request)
         return {"profile": store.profile, "items": [approval_dto(a) for a in store.history(limit=limit)]}
 
+    @router.get("/governance/pending")
+    def governance_pending(request: Request, limit: int = Query(500, ge=1, le=MAX_PAGE_SIZE)):
+        guard(request)
+        items = governance_store.pending(limit) if governance_store else []
+        return {"items": [GovernanceApprovalDTO(**item) for item in items]}
+
+    @router.get("/governance/history")
+    def governance_history(request: Request, limit: int = Query(100, ge=1, le=MAX_PAGE_SIZE)):
+        guard(request)
+        items = governance_store.history(limit) if governance_store else []
+        return {"items": [GovernanceApprovalDTO(**item) for item in items]}
+
+    @router.post("/governance/{approval_id}/respond", response_model=GovernanceApprovalDTO)
+    def governance_respond(request: Request, approval_id: str, body: GovernanceResponseBody):
+        guard(request)
+        if governance_decision_service is None:
+            raise HTTPException(503, "governance decisions are not configured")
+        try:
+            item = governance_decision_service.decide(
+                approval_id, "approved" if body.decision == "approve" else "denied", body.note
+            )
+            return GovernanceApprovalDTO(**item)
+        except GovernanceApprovalNotFound as exc:
+            raise HTTPException(404, str(exc))
+        except GovernanceApprovalConflict as exc:
+            raise HTTPException(409, str(exc))
+
     @router.post("/{request_id}/respond", response_model=ApprovalDTO)
-    def respond(request_id: str, body: ResponseBody):
-        guard()
+    def respond(request: Request, request_id: str, body: ResponseBody):
+        guard(request)
         try:
             return approval_dto(store.respond(request_id, body.decision, expected_version=body.expected_version, nonce=body.nonce))
         except ApprovalNotFound:
@@ -115,20 +173,20 @@ def create_router(store: ApprovalStore, *, authorize: Callable[[], bool]) -> API
             raise HTTPException(409, str(exc))
 
     @router.get("/events")
-    def events(after_id: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=MAX_PAGE_SIZE)):
-        guard()
+    def events(request: Request, after_id: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=MAX_PAGE_SIZE)):
+        guard(request)
         return {"events": [event_dto(event) for event in store.events(after_id=after_id, limit=limit)]}
 
     @router.websocket("/events/stream")
     async def stream(ws: WebSocket):
-        if not authorize():
+        if not authorize(ws):
             await ws.close(code=4403)
             return
         await ws.accept()
         cursor = 0
         try:
             while True:
-                if not authorize():
+                if not authorize(ws):
                     await ws.close(code=4403)
                     return
                 for event in store.events(after_id=cursor, limit=100):

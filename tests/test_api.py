@@ -10,7 +10,7 @@ from hermes_approval.store import ApprovalStore
 
 def make_app(store, authorized=True, prefix="/api/plugins/approvals"):
     app = FastAPI()
-    app.include_router(create_router(store, authorize=lambda: authorized), prefix=prefix)
+    app.include_router(create_router(store, authorize=lambda _connection: authorized), prefix=prefix)
     return app
 
 
@@ -232,7 +232,135 @@ def test_host_adapter_mounts_routes_and_callback_controls_access(tmp_path):
 
     store = ApprovalStore(tmp_path / "a.db", profile="p")
     app = FastAPI()
-    app.include_router(build_router(store, lambda: True), prefix="/api/plugins/approvals")
+    app.include_router(build_router(store, lambda _connection: True), prefix="/api/plugins/approvals")
     client = TestClient(app)
     assert client.get("/api/plugins/approvals/pending").status_code == 200
     assert client.get("/api/plugins/approvals/pending").json()["profile"] == "p"
+
+
+def test_governance_is_read_only_redacted_expiry_and_auth_scoped(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from hermes_approval.governance import GovernanceApprovalStore
+
+    now = datetime.now(timezone.utc)
+    ledger = tmp_path / "approvals.jsonl"
+    rows = [
+        {"approval_id": "apr_live", "created_at": now.isoformat(), "expires_at": (now + timedelta(hours=1)).isoformat(), "gate": "production", "action": "restart", "target": "host", "rationale": "Bearer TOPSECRET", "status": "pending", "decision_note": None},
+        {"approval_id": "apr_old", "created_at": now.isoformat(), "expires_at": (now - timedelta(hours=1)).isoformat(), "gate": "external", "action": "publish", "target": "repo", "rationale": "ordinary", "status": "pending", "decision_note": None},
+        {"approval_id": "apr_done", "created_at": now.isoformat(), "expires_at": (now + timedelta(hours=1)).isoformat(), "gate": "publish", "action": "publish", "target": "repo", "rationale": "ordinary", "status": "approved", "decision_note": "approved by Bernie"},
+    ]
+    ledger.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    store = ApprovalStore(tmp_path / "runtime.db", profile="p")
+    governance = GovernanceApprovalStore(ledger)
+    app = make_app(store, authorized=True)
+    app.router.routes.extend(create_router(store, authorize=lambda _connection: True, governance_store=governance).routes)
+    client = TestClient(app)
+    pending = client.get("/governance/pending")
+    assert pending.status_code == 200
+    assert [item["approval_id"] for item in pending.json()["items"]] == ["apr_live"]
+    assert "TOPSECRET" not in pending.text
+    history_statuses = {item["status"] for item in client.get("/governance/history").json()["items"]}
+    assert {"approved", "expired"} <= history_statuses
+    denied = make_app(store, authorized=False)
+    denied.router.routes.extend(create_router(store, authorize=lambda _connection: False, governance_store=governance).routes)
+    assert TestClient(denied).get("/governance/pending").status_code == 403
+    assert client.post("/governance/apr_live/respond", json={"decision": "approve"}).status_code == 503
+
+
+def test_governance_decision_exact_id_uses_injected_service_and_updates_fixture(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from hermes_approval.governance import GovernanceApprovalStore, GovernanceDecisionService
+
+    now = datetime.now(timezone.utc)
+    ledger = tmp_path / "approvals.jsonl"
+    rows = [{"approval_id": "apr_a", "created_at": now.isoformat(), "expires_at": (now + timedelta(hours=1)).isoformat(), "gate": "g", "action": "a", "target": "t", "rationale": "safe", "status": "pending"},
+            {"approval_id": "apr_b", "created_at": now.isoformat(), "expires_at": (now + timedelta(hours=1)).isoformat(), "gate": "g", "action": "b", "target": "t", "rationale": "safe", "status": "pending"}]
+    ledger.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    called = []
+    def fake_decide(approval_id, decision, note):
+        called.append((approval_id, decision, note))
+        with ledger.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({**next(r for r in rows if r["approval_id"] == approval_id), "status": decision, "decision_note": note}) + "\n")
+        return {"approval_id": approval_id, "status": decision}
+    store = GovernanceApprovalStore(ledger)
+    service = GovernanceDecisionService(store, fake_decide)
+    app = make_app(ApprovalStore(tmp_path / "runtime.db", profile="p"))
+    app.router.routes.extend(create_router(ApprovalStore(tmp_path / "other.db", profile="p"), authorize=lambda _: True, governance_store=store, governance_decision_service=service).routes)
+    client = TestClient(app)
+    response = client.post("/governance/apr_b/respond", json={"decision": "deny", "note": "Bearer DECISION-SECRET-987"})
+    assert response.status_code == 200
+    assert "DECISION-SECRET-987" not in response.text
+    assert called == [("apr_b", "denied", "Bearer DECISION-SECRET-987")]
+    assert store.get("apr_a")["status"] == "pending"
+    assert client.post("/governance/apr_b/respond", json={"decision": "approve"}).status_code == 409
+    assert client.post("/governance/unknown/respond", json={"decision": "approve"}).status_code == 404
+
+
+
+
+def test_governance_public_http_and_dashboard_payloads_redact_all_public_fields(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from hermes_approval.governance import GovernanceApprovalStore
+
+    now = datetime.now(timezone.utc)
+    secret = "GOVERNANCE-SECRET-987"
+    pem = "-----BEGIN PRIVATE KEY-----\\nPEM-MATERIAL-987\\n-----END PRIVATE KEY-----"
+    ledger = tmp_path / "approvals.jsonl"
+    row = {
+        "approval_id": "apr_public",
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(hours=1)).isoformat(),
+        "gate": {"name": "production", "nested": {"session_id": "session-private"}},
+        "action": {"command": f'{{"token":"{secret}"}}', "nested": [{"credential": secret}]},
+        "target": f'{{"token":"{secret}"}}',
+        "rationale": f"private_key={pem}",
+        "decision_note": f"Bearer {secret}",
+        "status": "pending",
+        "session_id": "session-private",
+        "private_nested": {"password": secret},
+    }
+    ledger.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    runtime = ApprovalStore(tmp_path / "runtime.db", profile="p")
+    app = FastAPI()
+    app.include_router(
+        create_router(runtime, authorize=lambda _: True, governance_store=GovernanceApprovalStore(ledger)),
+        prefix="/api/plugins/approvals",
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/plugins/approvals/governance/pending")
+    assert response.status_code == 200
+    payload = response.json()["items"][0]
+    assert set(payload) == {
+        "approval_id", "gate", "target", "action", "rationale", "decision_note",
+        "status", "created_at", "expires_at", "decided_at",
+    }
+    assert "session_id" not in response.text
+    assert secret not in response.text
+    assert "PEM-MATERIAL-987" not in response.text
+    # The dashboard receives only this explicit DTO; no ledger/private fields
+    # are available to its renderers even when the ledger row is extended.
+    assert set(payload) <= {
+        "approval_id", "gate", "target", "action", "rationale", "decision_note",
+        "status", "created_at", "expires_at", "decided_at",
+    }
+
+    history = client.get("/api/plugins/approvals/governance/history")
+    assert history.status_code == 200
+    assert secret not in history.text
+    assert "session_id" not in history.text
+
+
+def test_governance_decision_rejects_expired_without_call(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from hermes_approval.governance import GovernanceApprovalStore, GovernanceDecisionService
+    ledger = tmp_path / "approvals.jsonl"
+    row = {"approval_id": "apr_expired", "created_at": datetime.now(timezone.utc).isoformat(), "expires_at": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(), "gate": "g", "action": "a", "target": "t", "rationale": "safe", "status": "pending"}
+    ledger.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    called = []
+    service = GovernanceDecisionService(GovernanceApprovalStore(ledger), lambda *args: called.append(args))
+    app = FastAPI()
+    app.include_router(create_router(ApprovalStore(tmp_path / "runtime.db", profile="p"), authorize=lambda _: True, governance_store=GovernanceApprovalStore(ledger), governance_decision_service=service))
+    response = TestClient(app).post("/governance/apr_expired/respond", json={"decision": "approve"})
+    assert response.status_code == 409
+    assert called == []
