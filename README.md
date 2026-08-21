@@ -3,7 +3,7 @@
 Standalone, profile-scoped approval API foundation for a Hermes dashboard
 integration. It is intentionally **not** a patch to Hermes core: this
 repository does not publish, create remotes, execute approvals, restart
-services, or modify `/Users/bedenglerai/.hermes/hermes-agent`.
+services, or modify the Hermes installation or any host-managed profile.
 
 ## API contract
 
@@ -71,9 +71,11 @@ responses, or event payloads. Limits are positive and bounded; no unbounded or
 
 The actual Hermes host supports dashboard manifests with static `entry`/`css`
 assets and an optional module-level `api` router. This plugin ships a small
-host adapter at `dashboard/plugin_api.py`; it binds the active profile's store
-and canonical dashboard authorization callback, so the manifest declares
-`"api": "plugin_api.py"` and Hermes mounts it automatically:
+host adapter at `dashboard/plugin_api.py`; the host integration resolves the
+active profile and its home at runtime, then binds that store and the canonical
+dashboard authorization callback. It does not embed a username or absolute
+machine path. The manifest declares `"api": "plugin_api.py"` and Hermes mounts
+it automatically:
 
 ```python
 from dashboard.plugin_api import router

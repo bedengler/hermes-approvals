@@ -11,10 +11,10 @@ requires-python = ">=3.10"
 dependencies = ["fastapi>=0.100"]
 
 [project.optional-dependencies]
-test = ["pytest>=7", "httpx>=0.24"]
+test = ["pytest>=7", "httpx2>=2.0"]
 
 [dependency-groups]
-test = ["pytest>=7", "httpx>=0.24"]
+test = ["pytest>=7", "httpx2>=2.0"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]

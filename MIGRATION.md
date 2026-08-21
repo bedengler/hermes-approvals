@@ -1,19 +1,32 @@
 # Migration and host integration
 
 This repository deliberately stops at a reusable package boundary. It does
-not modify `/Users/bedenglerai/.hermes/hermes-agent` and does not automatically
-wire the live approval queue.
+not modify the Hermes installation or host-managed profiles and does not
+automatically wire the live approval queue.
 
 ## Host adapter
 
-1. Install the `hermes-approval-api` wheel in the host plugin environment. The
+1. Set the optional Hermes home override before installation when the host
+   uses a non-default location:
+
+   ```bash
+   export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+   ```
+
+   Installers and host processes should discover this value at installation or
+   startup; they must not copy a developer's absolute path into configuration.
+2. Install the `hermes-approval-api` wheel in the host plugin environment. The
    wheel includes `dashboard/plugin_api.py`, `dashboard/manifest.json`, and
    `dashboard/dist/index.js`, so installation does not depend on a source
    checkout or a separately copied dashboard directory.
-2. Construct `ApprovalStore(profile_home / "approvals.db", profile=active_profile)`.
-3. Build routes with `dashboard.plugin_api.build_router(store, dashboard_authorize)`.
-4. Mount the returned router at `/api/plugins/approvals`.
-5. Install `dashboard/` as the static dashboard payload and use the host SDK's
+3. At startup, use the host profile API to obtain the active profile name and
+   profile home under `HERMES_HOME` (or the host's equivalent discovery API),
+   then construct `ApprovalStore(profile_home / "approvals.db",
+   profile=active_profile)`. The adapter receives these resolved values; it
+   does not guess or hard-code a machine path.
+4. Build routes with `dashboard.plugin_api.build_router(store, dashboard_authorize)`.
+5. Mount the returned router at `/api/plugins/approvals`.
+6. Install `dashboard/` as the static dashboard payload and use the host SDK's
    authenticated `fetchJSON`/plugin registry APIs.
 
 The included `test_host_adapter_mounts_routes_and_callback_controls_access`

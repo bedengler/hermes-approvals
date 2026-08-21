@@ -247,7 +247,7 @@ def test_governance_is_read_only_redacted_expiry_and_auth_scoped(tmp_path):
     rows = [
         {"approval_id": "apr_live", "created_at": now.isoformat(), "expires_at": (now + timedelta(hours=1)).isoformat(), "gate": "production", "action": "restart", "target": "host", "rationale": "Bearer TOPSECRET", "status": "pending", "decision_note": None},
         {"approval_id": "apr_old", "created_at": now.isoformat(), "expires_at": (now - timedelta(hours=1)).isoformat(), "gate": "external", "action": "publish", "target": "repo", "rationale": "ordinary", "status": "pending", "decision_note": None},
-        {"approval_id": "apr_done", "created_at": now.isoformat(), "expires_at": (now + timedelta(hours=1)).isoformat(), "gate": "publish", "action": "publish", "target": "repo", "rationale": "ordinary", "status": "approved", "decision_note": "approved by Bernie"},
+        {"approval_id": "apr_done", "created_at": now.isoformat(), "expires_at": (now + timedelta(hours=1)).isoformat(), "gate": "publish", "action": "publish", "target": "repo", "rationale": "ordinary", "status": "approved", "decision_note": "approved by operator"},
     ]
     ledger.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     store = ApprovalStore(tmp_path / "runtime.db", profile="p")
