@@ -10,7 +10,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
-ADAPTER = Path.home() / ".hermes/plugins/approvals/dashboard/plugin_api.py"
+# Use a repository-local installed-adapter fixture so the contract test is
+# independent of whether Hermes is installed on the test runner.
+ADAPTER = Path(__file__).resolve().parent / "fixtures" / "installed_host_adapter" / "plugin_api.py"
 
 
 def _load_adapter(monkeypatch, *, token: str):
