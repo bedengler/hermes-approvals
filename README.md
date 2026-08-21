@@ -5,6 +5,169 @@ integration. It is intentionally **not** a patch to Hermes core: this
 repository does not publish, create remotes, execute approvals, restart
 services, or modify the Hermes installation or any host-managed profile.
 
+## Installation and activation
+
+These instructions install the package and the dashboard payload; they do not
+change Hermes core. The live host integration is intentionally a manual step.
+Before starting, use a Hermes installation whose dashboard supports plugins
+with a static `entry` payload (and optional `css`) plus an optional
+module-level `api` adapter, and have Python 3.10+ plus
+[uv](https://docs.astral.sh/uv/) available. The
+dashboard/plugin host must also provide its normal plugin registry, profile
+discovery, and authenticated request helpers.
+
+### 1. Install the Python package
+
+Install into the same Python environment used by the Hermes dashboard host.
+Either install directly from the published repository:
+
+```bash
+uv pip install "hermes-approval-api @ git+https://github.com/bedengler/hermes-approvals.git"
+```
+
+or install a wheel (for example, one built with `uv build`):
+
+```bash
+uv pip install ./dist/hermes_approval_api-*.whl
+```
+
+The wheel contains the importable `dashboard` adapter package, its
+`manifest.json`, and the compiled `dist/index.js` bundle. A source checkout is
+not required at runtime.
+
+### 2. Install the dashboard plugin payload
+
+Hermes discovers the plugin from the active Hermes home. Use the portable
+default below, or set `HERMES_HOME` to the home used by the dashboard process
+before copying the files:
+
+```bash
+export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+PLUGIN_DIR="$HERMES_HOME/plugins/approvals"
+DASHBOARD_SRC="$(python3 -c 'import dashboard; print(dashboard.__path__[0])')"
+mkdir -p "$PLUGIN_DIR"
+cp -R "$DASHBOARD_SRC/." "$PLUGIN_DIR/"
+```
+
+This installs both the static dashboard plugin (`manifest.json` and
+`dist/index.js`) and the host adapter (`plugin_api.py`) under
+`${HERMES_HOME:-$HOME/.hermes}/plugins/approvals`. Do not copy an absolute
+developer path into a manifest or host configuration. If the dashboard runs
+under a different environment, perform the package install and copy step from
+that environment so `DASHBOARD_SRC` resolves to the matching installation.
+
+### 3. Bind the adapter to the active profile and canonical auth
+
+At dashboard startup, the host must discover the active profile and profile
+home using its normal runtime profile API (with `HERMES_HOME` as the optional
+home override). Construct a profile-scoped store, then inject the dashboard's
+existing authorization callback into the adapter:
+
+```python
+from pathlib import Path
+
+from hermes_approval.store import ApprovalStore
+from dashboard.plugin_api import build_router
+
+profile_name, profile_home = discover_active_profile()  # host API
+store = ApprovalStore(
+    Path(profile_home) / "approvals.db",
+    profile=profile_name,
+)
+router = build_router(store, dashboard_authorize)
+app.include_router(router, prefix="/api/plugins/approvals")
+```
+
+`discover_active_profile()` and `dashboard_authorize` above are host-provided
+placeholders: use the actual APIs supplied by the Hermes dashboard. The
+adapter does not discover profiles by guessing, read credentials, mint
+credentials, or bypass middleware. The host must mount the returned router at
+`/api/plugins/approvals`; the routes in this README are relative to that
+prefix. Preserve the canonical dashboard authorization path for HTTP and
+WebSocket requests rather than adding a second token scheme.
+
+The manifest's `api: "plugin_api.py"` identifies the module-level adapter to
+hosts that support that manifest contract. Installing the files does **not** by
+itself prove that a particular Hermes build will register or bind the adapter:
+if the host requires an explicit registry/adapter hook, configure that hook
+manually using its documented plugin API. Do not duplicate the
+`/api/plugins/approvals` prefix in the router.
+
+### 4. Enable and reload the dashboard
+
+Enable the `approvals` plugin through the dashboard's normal plugin settings or
+registry, then reload/restart **only the Hermes dashboard process** so it
+re-reads the manifest and adapter. Do not restart Hermes core or unrelated
+services as part of this installation. If your host separates static plugin
+discovery from backend registration, complete both documented host steps
+before reloading the dashboard.
+
+### 5. Verify the installation
+
+Using the dashboard's canonical authenticated client (not an unauthenticated
+browser or a copied token), request:
+
+```text
+GET /api/plugins/approvals/pending?limit=1
+GET /api/plugins/approvals/history?limit=1
+GET /api/plugins/approvals/governance/pending?limit=1
+GET /api/plugins/approvals/governance/history?limit=1
+```
+
+Successful responses are JSON objects containing an `items` list (and the
+runtime approval responses include the resolved profile). A `401`/`403` means
+the host authorization callback correctly denied the request or the client is
+not using the canonical dashboard session; fix that integration rather than
+weakening authorization. A `404` usually means the plugin was not enabled or
+the host mount is missing. `GET /events` and the event WebSocket are also
+available as listed in the API contract below.
+
+Runtime command approvals and governance approvals are different workflows.
+Runtime approval responses resolve an approval request and this package never
+executes a shell command. Governance actions delegate to the existing Hermes
+governance decision function and require the dashboard authorization callback,
+the exact approval ID, pending/TTL checks, and the UI's explicit second
+confirmation. They remain subject to the host's existing policy and audit
+controls; installing this plugin is not permission to approve governance
+actions and does not replace those controls.
+
+### Uninstall and rollback
+
+To disable first, turn off the `approvals` plugin in the dashboard and reload
+the dashboard. To remove the installed payload, verify the directory is the
+intended plugin directory and then remove only that directory:
+
+```bash
+export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+PLUGIN_DIR="$HERMES_HOME/plugins/approvals"
+test "${PLUGIN_DIR##*/}" = approvals && rm -rf "$PLUGIN_DIR"
+```
+
+Uninstall the Python package from the dashboard environment with
+`uv pip uninstall hermes-approval-api`. Back up the profile database before
+removing it; uninstalling the package or static payload does not delete
+`approvals.db` or governance records. Roll back by reinstalling the previous
+package version, restoring the previous plugin payload, and re-enabling only
+after the dashboard has been reloaded.
+
+### Troubleshooting package/runtime mismatches
+
+- **Import or `ModuleNotFoundError` errors:** confirm the dashboard and
+  `uv pip install` use the same Python environment; run
+  `python3 -c 'import dashboard, hermes_approval; print(dashboard.__file__); print(hermes_approval.__file__)'`.
+- **Manifest or bundle not found:** repeat the copy step from that same
+  environment and verify `${PLUGIN_DIR}/manifest.json` and
+  `${PLUGIN_DIR}/dist/index.js` exist. Do not point the host at a checkout-only
+  `dashboard/` path.
+- **Routes missing or duplicated:** verify the host loaded `plugin_api.py`,
+  mounted the returned router exactly at `/api/plugins/approvals`, and did not
+  add that prefix inside the router.
+- **Authorization failures:** keep the dashboard's canonical callback and
+  session middleware; do not add ad-hoc credentials or disable the callback.
+- **Stale UI after an upgrade:** disable/re-enable the plugin and reload only
+  the dashboard, then check that the manifest version and bundle came from the
+  same package installation.
+
 ## API contract
 
 The host mounts the router at `/api/plugins/approvals`. These are router-relative
@@ -69,17 +232,21 @@ responses, or event payloads. Limits are positive and bounded; no unbounded or
 
 ## Hermes host adapter boundary
 
-The actual Hermes host supports dashboard manifests with static `entry`/`css`
-assets and an optional module-level `api` router. This plugin ships a small
-host adapter at `dashboard/plugin_api.py`; the host integration resolves the
-active profile and its home at runtime, then binds that store and the canonical
-dashboard authorization callback. It does not embed a username or absolute
-machine path. The manifest declares `"api": "plugin_api.py"` and Hermes mounts
-it automatically:
+The actual Hermes host supports dashboard manifests with a static `entry`
+payload (and optional `css`) and an optional module-level `api` router. This
+plugin ships a small host adapter at `dashboard/plugin_api.py`; the host
+integration must resolve the active profile and its home at runtime, then bind
+that store and the canonical dashboard authorization callback. It does not
+embed a username or absolute machine path. The manifest declares
+`"api": "plugin_api.py"`, but installing it does not automatically wire live
+host integration on every Hermes build. Hosts that support this manifest
+contract may load the adapter; otherwise register it manually with the host
+plugin API:
 
 ```python
-from dashboard.plugin_api import router
+from dashboard.plugin_api import build_router
 
+router = build_router(profile_store, dashboard_authorize)
 app.include_router(router, prefix="/api/plugins/approvals")
 ```
 
