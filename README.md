@@ -18,18 +18,40 @@ discovery, and authenticated request helpers.
 
 ### 1. Install the Python package
 
-Install into the same Python environment used by the Hermes dashboard host.
-Either install directly from the published repository:
+First identify the **exact Python executable running the dashboard**. Read the
+dashboard service/launcher configuration or process supervisor to find the
+executable and environment it starts; use that configured executable (an
+absolute path), not the Python selected by your interactive shell, an unrelated
+project/system Python, or a guessed virtual environment. Set it here:
 
 ```bash
-uv pip install "hermes-approval-api @ git+https://github.com/bedengler/hermes-approvals.git"
+DASHBOARD_PYTHON="/absolute/path/to/the/dashboard/python"
 ```
 
-or install a wheel (for example, one built with `uv build`):
+Explicitly target that interpreter when installing from the published
+repository:
 
 ```bash
-uv pip install ./dist/hermes_approval_api-*.whl
+uv pip install --python "$DASHBOARD_PYTHON" "hermes-approval-api @ git+https://github.com/bedengler/hermes-approvals.git"
 ```
+
+Or install a wheel (for example, one built with `uv build`) into that same
+interpreter:
+
+```bash
+uv pip install --python "$DASHBOARD_PYTHON" ./dist/hermes_approval_api-*.whl
+```
+
+Verify imports and package version using the exact interpreter that runs the
+dashboard:
+
+```bash
+"$DASHBOARD_PYTHON" -c 'import dashboard, hermes_approval, importlib.metadata; print("dashboard:", dashboard.__file__); print("hermes_approval:", hermes_approval.__file__); print("hermes-approval-api:", importlib.metadata.version("hermes-approval-api"))'
+```
+
+Both imports must succeed. Keep the reported paths and version for diagnostics.
+If either import fails, reinstall into this interpreter and verify again before
+continuing.
 
 The wheel contains the importable `dashboard` adapter package, its
 `manifest.json`, and the compiled `dist/index.js` bundle. A source checkout is
@@ -44,7 +66,7 @@ before copying the files:
 ```bash
 export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 PLUGIN_DIR="$HERMES_HOME/plugins/approvals"
-DASHBOARD_SRC="$(python3 -c 'import dashboard; print(dashboard.__path__[0])')"
+DASHBOARD_SRC="$("$DASHBOARD_PYTHON" -c 'import dashboard; print(dashboard.__path__[0])')"
 mkdir -p "$PLUGIN_DIR"
 cp -R "$DASHBOARD_SRC/." "$PLUGIN_DIR/"
 ```
@@ -52,9 +74,9 @@ cp -R "$DASHBOARD_SRC/." "$PLUGIN_DIR/"
 This installs both the static dashboard plugin (`manifest.json` and
 `dist/index.js`) and the host adapter (`plugin_api.py`) under
 `${HERMES_HOME:-$HOME/.hermes}/plugins/approvals`. Do not copy an absolute
-developer path into a manifest or host configuration. If the dashboard runs
-under a different environment, perform the package install and copy step from
-that environment so `DASHBOARD_SRC` resolves to the matching installation.
+developer path into a manifest or host configuration. The copy step must use
+the same `$DASHBOARD_PYTHON` as the package install and verification, so
+`DASHBOARD_SRC` resolves to the payload bundled with the dashboard's package.
 
 ### 3. Bind the adapter to the active profile and canonical auth
 
@@ -152,9 +174,23 @@ after the dashboard has been reloaded.
 
 ### Troubleshooting package/runtime mismatches
 
-- **Import or `ModuleNotFoundError` errors:** confirm the dashboard and
-  `uv pip install` use the same Python environment; run
-  `python3 -c 'import dashboard, hermes_approval; print(dashboard.__file__); print(hermes_approval.__file__)'`.
+- **The SPA loads, but its API is missing or dashboard startup logs show
+  `ModuleNotFoundError` (for example, `No module named 'hermes_approval'`) or
+  adapter/mount errors:** the static page can load even when its Python adapter
+  cannot. Re-identify the exact dashboard executable from its service/launcher
+  configuration, set `$DASHBOARD_PYTHON` to that path, and run the import and
+  version check above. If it fails, install with
+  `uv pip install --python "$DASHBOARD_PYTHON" ...`, repeat the check, and copy
+  the plugin payload using that same interpreter. Then reload/restart **only
+  the dashboard** and check its startup logs for import and route-mount errors.
+  A Hermes update could cause this only if it replaced or switched the
+  dashboard environment; an incident where the active environment lacked the
+  dependency does not by itself establish that an update caused it.
+- **API returns `404`:** check plugin enablement and router mounting/path
+  configuration. **API returns `401` or `403`:** the canonical dashboard
+  authorization rejected the request; check the authenticated session and
+  host callback. Do not weaken or bypass authentication to address either
+  result.
 - **Manifest or bundle not found:** repeat the copy step from that same
   environment and verify `${PLUGIN_DIR}/manifest.json` and
   `${PLUGIN_DIR}/dist/index.js` exist. Do not point the host at a checkout-only
@@ -167,6 +203,43 @@ after the dashboard has been reloaded.
 - **Stale UI after an upgrade:** disable/re-enable the plugin and reload only
   the dashboard, then check that the manifest version and bundle came from the
   same package installation.
+
+### Handling approvals during repair
+
+Hermes Agent's built-in dangerous-command approval is separate from the
+optional Hermes Company governance workflow. For an upstream Hermes CLI
+command prompt, review the exact command and choose `once` (the `o` option) for
+a one-off repair; the prompt also offers session, always, and deny. `always`
+persists an allowlist rule, so do not select it just to complete a repair. In
+Gateway or messaging, reply `yes`, `y`, `approve`, `ok`, or `go` to approve the
+pending command;
+unapproved commands are denied by default. See the [Hermes Agent security
+documentation](https://hermes-agent.nousresearch.com/docs/user-guide/security).
+Do not use `--yolo`, turn approvals off, or grant broad/permanent approval as a
+repair workaround.
+
+Only users with the optional Hermes Company `~/.hermes/company/` customization
+have the separate governance approval flow and `apr_...` IDs. Those approvals
+are not native Hermes shell prompts, and a dashboard-plugin failure does not
+remove the Company governance CLI. Review the exact pending ID, action, and
+scope first by listing pending requests:
+
+```bash
+python3 ~/.hermes/company/integration/governance_mcp/approvals.py list
+```
+
+Approve only the intended request; deny it and stop if it is unexpected. To
+approve a reviewed request manually, replace `approval_ID` with its actual
+pending ID and omit the square brackets:
+
+```bash
+python3 ~/.hermes/company/integration/governance_mcp/approvals.py approve [approval_ID]
+```
+
+Users without this optional customization do not have or need that script or
+the `apr_...` flow; approve or deny Hermes' native command prompt in the
+session UI instead. The Company CLI is not part of upstream Hermes and is not
+required to use this plugin.
 
 ## API contract
 
