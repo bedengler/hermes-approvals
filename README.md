@@ -80,10 +80,18 @@ the same `$DASHBOARD_PYTHON` as the package install and verification, so
 
 ### 3. Bind the adapter to the active profile and canonical auth
 
-At dashboard startup, the host must discover the active profile and profile
-home using its normal runtime profile API (with `HERMES_HOME` as the optional
-home override). Construct a profile-scoped store, then inject the dashboard's
-existing authorization callback into the adapter:
+The supported Hermes dashboard host loads the manifest's `api` module through
+its dashboard plugin loader. `dashboard/plugin_api.py` binds the store to the
+active Hermes profile home and delegates authorization to the host's canonical
+session/query-token checks. The host-level registration, profile isolation,
+and authorization behavior are exercised by
+[`tests/test_supported_hermes_host.py`](tests/test_supported_hermes_host.py);
+the exact tested host revision and command are recorded in
+[`docs/host-integration.md`](docs/host-integration.md).
+
+For another host that does not implement Hermes' manifest loader, use its
+runtime profile API to resolve a profile home and inject its canonical
+authorization callback into the reusable factory:
 
 ```python
 from pathlib import Path
@@ -100,20 +108,12 @@ router = build_router(store, dashboard_authorize)
 app.include_router(router, prefix="/api/plugins/approvals")
 ```
 
-`discover_active_profile()` and `dashboard_authorize` above are host-provided
-placeholders: use the actual APIs supplied by the Hermes dashboard. The
-adapter does not discover profiles by guessing, read credentials, mint
-credentials, or bypass middleware. The host must mount the returned router at
-`/api/plugins/approvals`; the routes in this README are relative to that
-prefix. Preserve the canonical dashboard authorization path for HTTP and
-WebSocket requests rather than adding a second token scheme.
-
-The manifest's `api: "plugin_api.py"` identifies the module-level adapter to
-hosts that support that manifest contract. Installing the files does **not** by
-itself prove that a particular Hermes build will register or bind the adapter:
-if the host requires an explicit registry/adapter hook, configure that hook
-manually using its documented plugin API. Do not duplicate the
-`/api/plugins/approvals` prefix in the router.
+`discover_active_profile()` and `dashboard_authorize` above are placeholders
+for non-Hermes hosts. The adapter does not read or mint credentials or bypass
+middleware. The Hermes host supplies `/api/plugins/approvals` as the prefix;
+do not duplicate it in the router. Other hosts must preserve their canonical
+HTTP and WebSocket authorization paths rather than adding a second token
+scheme.
 
 ### 4. Enable and reload the dashboard
 
@@ -305,16 +305,13 @@ responses, or event payloads. Limits are positive and bounded; no unbounded or
 
 ## Hermes host adapter boundary
 
-The actual Hermes host supports dashboard manifests with a static `entry`
-payload (and optional `css`) and an optional module-level `api` router. This
-plugin ships a small host adapter at `dashboard/plugin_api.py`; the host
-integration must resolve the active profile and its home at runtime, then bind
-that store and the canonical dashboard authorization callback. It does not
-embed a username or absolute machine path. The manifest declares
-`"api": "plugin_api.py"`, but installing it does not automatically wire live
-host integration on every Hermes build. Hosts that support this manifest
-contract may load the adapter; otherwise register it manually with the host
-plugin API:
+The supported Hermes host's manifest loader imports `dashboard/plugin_api.py`
+and mounts its module-level `router`. That adapter resolves the active
+profile home and uses Hermes' canonical dashboard authentication checks. It
+does not embed a username or absolute machine path. This integration is
+verified against the exact checkout in `docs/host-integration.md`; it is not a
+live-host rollout or a claim that the plugin is deployed. Other host versions
+that do not implement this manifest contract can use the factory below:
 
 ```python
 from dashboard.plugin_api import build_router
@@ -323,8 +320,8 @@ router = build_router(profile_store, dashboard_authorize)
 app.include_router(router, prefix="/api/plugins/approvals")
 ```
 
-The route-mounting/auth integration test is in `tests/test_api.py`. This is a
-host-adapter installation path, not live Hermes wiring.
+The reusable router behavior is covered by `tests/test_api.py`; the actual
+Hermes host registration path is covered by `tests/test_supported_hermes_host.py`.
 
 ## Verification
 

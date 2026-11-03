@@ -19,19 +19,25 @@ automatically wire the live approval queue.
    wheel includes `dashboard/plugin_api.py`, `dashboard/manifest.json`, and
    `dashboard/dist/index.js`, so installation does not depend on a source
    checkout or a separately copied dashboard directory.
-3. At startup, use the host profile API to obtain the active profile name and
-   profile home under `HERMES_HOME` (or the host's equivalent discovery API),
-   then construct `ApprovalStore(profile_home / "approvals.db",
-   profile=active_profile)`. The adapter receives these resolved values; it
-   does not guess or hard-code a machine path.
-4. Build routes with `dashboard.plugin_api.build_router(store, dashboard_authorize)`.
-5. Mount the returned router at `/api/plugins/approvals`.
-6. Install `dashboard/` as the static dashboard payload and use the host SDK's
+3. On the supported Hermes dashboard host, install the package's dashboard
+   payload under the plugin directory and enable `approvals` through the host's
+   normal plugin settings. The host discovers `dashboard/manifest.json`,
+   imports its declared `api` module, and mounts its module-level `router` at
+   `/api/plugins/approvals`. The adapter obtains the active Hermes profile
+   home and name in the request context so the host's `?profile=` scope selects
+   the matching store, and uses the canonical dashboard authentication checks.
+4. For a different host without Hermes' manifest loader, resolve the active
+   profile and canonical auth callback using that host's runtime APIs, then use
+   `dashboard.plugin_api.build_router(store, dashboard_authorize)` and mount it
+   at `/api/plugins/approvals`.
+5. Install `dashboard/` as the static payload and use the host SDK's
    authenticated `fetchJSON`/plugin registry APIs.
 
-The included `test_host_adapter_mounts_routes_and_callback_controls_access`
-fixture proves the route prefix and injected authorization seam without
-inventing Hermes APIs.
+`tests/test_supported_hermes_host.py` drives the actual Hermes dashboard plugin
+discovery/import/`include_router` path in an isolated test home and verifies
+profile binding plus authorization. `docs/host-integration.md` records the
+host revision and exact command. This is source-level integration evidence,
+not a live-host rollout.
 
 ## Existing approvals
 
