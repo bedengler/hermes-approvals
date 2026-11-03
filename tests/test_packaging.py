@@ -19,6 +19,7 @@ def test_wheel_contains_documented_dashboard_payload(tmp_path: Path):
         manifest = json.loads(wheel.read("dashboard/manifest.json"))
     assert {
         "dashboard/__init__.py",
+        "dashboard/approval_cleanup.py",
         "dashboard/plugin_api.py",
         "dashboard/manifest.json",
         "dashboard/dist/index.js",

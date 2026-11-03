@@ -297,11 +297,15 @@ responses, or event payloads. Limits are positive and bounded; no unbounded or
   transaction, with database busy handling and profile scoping.
 - `store.cleanup()` is the retention mechanism: by default it deletes resolved
   approvals after 90 days and keeps only the newest 10,000 events per profile.
+  Configure per-profile limits under `approvals.retention_days` and
+  `approvals.max_events`; Hermes cron runs the bundled
+  `dashboard/approval_cleanup.py` entry point for each profile where the
+  documented maintenance job is installed (see `MIGRATION.md`).
   `retention_days` must be an integer from 1 through 3,650, and `max_events`
   must be an integer from 1 through 100,000; booleans, floats, strings, zero,
   negatives, and values above those limits are rejected. Events are not
-  age-pruned; their retention is controlled only by `max_events`. Schedule
-  cleanup from the host maintenance job; see `MIGRATION.md`.
+  age-pruned; their retention is controlled only by `max_events`. Hermes
+  reports cleanup failures as failed no-agent cron runs; see `MIGRATION.md`.
 
 ## Hermes host adapter boundary
 

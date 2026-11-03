@@ -36,3 +36,31 @@ Actual result: `1 passed, 1 warning in 1.87s`. The warning is Starlette's
 `TestClient` deprecation notice for the host environment's `httpx`; it does not
 fail the integration check. `HERMES_DISABLE_LAZY_INSTALLS=1` prevents this
 source-verification command from starting Hermes' lazy runtime update path.
+
+## Retention maintenance integration proof
+
+The same supported host revision also provides the no-agent cron script
+maintenance path. `tests/test_supported_hermes_maintenance.py` executes the
+copied package entry point through Hermes' actual `cron.scheduler.run_job()`
+under `_profile_cron_scope()` for two profile homes with distinct retention
+configuration, then exercises a failing configuration and checks the cron
+failure result. The test uses disposable homes; it does not alter the host
+checkout or any user profile.
+
+Run both supported-host checks from the approval API checkout:
+
+```sh
+export HERMES_AGENT_REPO="${HERMES_AGENT_REPO:-$HOME/.hermes/hermes-agent}"
+export HERMES_DISABLE_LAZY_INSTALLS=1
+uv run --locked --project "$HERMES_AGENT_REPO" --with pytest \
+python -m pytest -vv -s \
+  "$PWD/tests/test_supported_hermes_host.py" \
+  "$PWD/tests/test_supported_hermes_maintenance.py"
+```
+
+Verified against host commit `f2ae4a83a3051f38f6d33f8c71c3c54cb3418ee5`
+(`v0.21.4+canary.20261001T070239Z-58-gf2ae4a83a3`). Actual result:
+`2 passed, 1 warning in 2.48s`; the warning is the existing Starlette
+`TestClient` deprecation notice for `httpx`. Hermes cron reports a non-zero
+script exit as a failed run and sends the configured failure alert; operator
+inspection commands are documented in `MIGRATION.md`.

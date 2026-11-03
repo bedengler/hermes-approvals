@@ -50,11 +50,51 @@ rolls back the approval response.
 ## Restart and retention
 
 The SQLite schema is created idempotently on startup, so reopening the same
-profile database preserves pending/history/events. Hosts should schedule
-`store.cleanup()` at least daily. The default policy deletes resolved approvals
-after 90 days and keeps the newest 10,000 events per profile. `retention_days`
-must be an integer from 1 through 3,650, and `max_events` must be an integer
-from 1 through 100,000. Booleans, floats, strings, zero, negatives, and values
-above those limits are rejected. Events do not have an age-based policy:
-`max_events` is their sole retention limit, so an event may outlive its
-resolved approval row.
+profile database preserves pending/history/events. The supported Hermes
+maintenance entry point is a per-profile no-agent cron job. Hermes' gateway
+cron multiplexer ticks each served profile's own job store under that profile's
+home; create the job in every active profile. The job executes the package's
+`dashboard/approval_cleanup.py` script, which delegates to
+`hermes_approval.maintenance.cleanup_active_profile()` and calls
+`ApprovalStore.cleanup()` for the profile scoped by Hermes.
+
+Install the script into each profile's scripts directory using the same
+`DASHBOARD_PYTHON` and `DASHBOARD_SRC` from the README installation steps:
+
+```bash
+PROFILE=default
+# Set PROFILE_HOME to this profile's actual Hermes home. For the default
+# profile this is usually "$HOME/.hermes"; a named profile is usually under
+# "$HOME/.hermes/profiles/$PROFILE".
+PROFILE_HOME="$HOME/.hermes"
+export HERMES_HOME="$PROFILE_HOME"
+mkdir -p "$HERMES_HOME/scripts"
+cp "$DASHBOARD_SRC/approval_cleanup.py" "$HERMES_HOME/scripts/approval-cleanup.py"
+hermes -p "$PROFILE" cron create "0 3 * * *" \
+  --no-agent --script approval-cleanup.py \
+  --interpreter "$DASHBOARD_PYTHON" \
+  --name approvals-retention-cleanup
+```
+
+Repeat for every active profile, setting `PROFILE` and `PROFILE_HOME` to that
+profile before copying the script and creating its job. The script reads
+optional per-profile `approvals.retention_days` and `approvals.max_events`
+settings from that profile's `config.yaml`; omitted settings use 90 days and
+10,000 events. For example:
+
+```yaml
+approvals:
+  retention_days: 90
+  max_events: 10000
+```
+
+The resolved-record retention must be an integer from 1 through 3,650, and the
+event limit an integer from 1 through 100,000. Invalid values or database
+errors make the script exit non-zero. Hermes cron records the failed run and
+emits its configured failure alert; inspect the profile's `hermes cron runs
+<job-id>` output and `hermes cron status` for the failure details.
+
+Resolved approvals older than the configured retention are deleted; pending
+approvals are never deleted. Events have no age-based policy: `max_events` is
+their sole retention limit, so an event may outlive its resolved approval row.
+Cleanup success prints the profile, configured limits, and deleted event count.
