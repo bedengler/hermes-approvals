@@ -26,15 +26,13 @@ the mounted host app.
 Run from the approval API checkout, with the host checkout above available:
 
 ```sh
-HERMES_AGENT_REPO=/Users/bedenglerai/.hermes/hermes-agent \
-PYTHONPATH=/Users/bedenglerai/hermes-approval-api/.worktrees/t_081be571/src \
-HERMES_DISABLE_LAZY_INSTALLS=1 \
-uv run --locked --project /Users/bedenglerai/.hermes/hermes-agent --with pytest \
-python -m pytest -vv -s \
-/Users/bedenglerai/hermes-approval-api/.worktrees/t_081be571/tests/test_supported_hermes_host.py
+export HERMES_AGENT_REPO=/Users/bedenglerai/.hermes/hermes-agent
+export HERMES_DISABLE_LAZY_INSTALLS=1
+uv run --locked --project "$HERMES_AGENT_REPO" --with pytest \
+python -m pytest -vv -s "$PWD/tests/test_supported_hermes_host.py"
 ```
 
-Actual result: `1 passed, 1 warning in 1.68s`. The warning is Starlette's
+Actual result: `1 passed, 1 warning in 1.87s`. The warning is Starlette's
 `TestClient` deprecation notice for the host environment's `httpx`; it does not
 fail the integration check. `HERMES_DISABLE_LAZY_INSTALLS=1` prevents this
 source-verification command from starting Hermes' lazy runtime update path.
