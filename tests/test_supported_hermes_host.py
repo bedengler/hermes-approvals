@@ -107,6 +107,8 @@ def test_supported_hermes_host_mounts_profile_scoped_approvals(tmp_path, monkeyp
     )
     assert not adapter._authorize(_request(web_server.app))
 
+    # The host auth middleware rejects the missing token with 401 before the
+    # plugin guard runs (which independently denies unauthorized requests).
     with TestClient(web_server.app) as client:
         assert client.get("/api/plugins/approvals/pending").status_code == 401
         authorized = client.get(

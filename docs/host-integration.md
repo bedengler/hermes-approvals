@@ -5,7 +5,7 @@ plugin into the user's live Hermes home, enable it there, or claim deployment.
 
 ## Tested revisions
 
-- Hermes Agent host checkout: `/Users/bedenglerai/.hermes/hermes-agent`
+- Hermes Agent host checkout: `${HERMES_AGENT_REPO:-$HOME/.hermes/hermes-agent}`
 - Host source version: output of `git describe --tags --always --dirty` was
   `v0.21.4+canary.20261001T070239Z-58-gf2ae4a83a3`
 - Exact host commit: `f2ae4a83a3051f38f6d33f8c71c3c54cb3418ee5`
@@ -26,7 +26,7 @@ the mounted host app.
 Run from the approval API checkout, with the host checkout above available:
 
 ```sh
-export HERMES_AGENT_REPO=/Users/bedenglerai/.hermes/hermes-agent
+export HERMES_AGENT_REPO="${HERMES_AGENT_REPO:-$HOME/.hermes/hermes-agent}"
 export HERMES_DISABLE_LAZY_INSTALLS=1
 uv run --locked --project "$HERMES_AGENT_REPO" --with pytest \
 python -m pytest -vv -s "$PWD/tests/test_supported_hermes_host.py"
