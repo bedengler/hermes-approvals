@@ -58,29 +58,54 @@ home; create the job in every active profile. The job executes the package's
 `hermes_approval.maintenance.cleanup_active_profile()` and calls
 `ApprovalStore.cleanup()` for the profile scoped by Hermes.
 
-Install the script into each profile's scripts directory using the same
-`DASHBOARD_PYTHON` and `DASHBOARD_SRC` from the README installation steps:
+Use the bundled offline installer to copy the script and register the job in
+one explicitly selected profile. The profile must already exist in Hermes.
+`--hermes-home` is the Hermes root (not the selected profile's home); the
+installer resolves `default` to that root and named profiles to
+`profiles/<name>`. It invokes only Hermes' local `cron create`/`cron remove`
+commands: installation never runs the cleanup script, contacts a model, or
+changes another profile. `--dry-run` reads the selected profile's job store
+and prints the planned operation without creating directories, copying files,
+or invoking Hermes.
 
 ```bash
-PROFILE=default
-# Set PROFILE_HOME to this profile's actual Hermes home. For the default
-# profile this is usually "$HOME/.hermes"; a named profile is usually under
-# "$HOME/.hermes/profiles/$PROFILE".
-PROFILE_HOME="$HOME/.hermes"
-export HERMES_HOME="$PROFILE_HOME"
-mkdir -p "$HERMES_HOME/scripts"
-cp "$DASHBOARD_SRC/approval_cleanup.py" "$HERMES_HOME/scripts/approval-cleanup.py"
-hermes -p "$PROFILE" cron create "0 3 * * *" \
-  --no-agent --script approval-cleanup.py \
+PROFILE=default                    # or an existing named profile, e.g. alpha
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+HERMES_CLI="$(command -v hermes)"
+"$DASHBOARD_PYTHON" -m hermes_approval.cleanup_installer install \
+  --profile "$PROFILE" \
+  --hermes-home "$HERMES_HOME" \
+  --hermes "$HERMES_CLI" \
+  --script-source "$DASHBOARD_SRC/approval_cleanup.py" \
   --interpreter "$DASHBOARD_PYTHON" \
-  --name approvals-retention-cleanup
+  --dry-run
+# After inspecting the preview, repeat the command without --dry-run to install.
 ```
 
-Repeat for every active profile, setting `PROFILE` and `PROFILE_HOME` to that
-profile before copying the script and creating its job. The script reads
-optional per-profile `approvals.retention_days` and `approvals.max_events`
-settings from that profile's `config.yaml`; omitted settings use 90 days and
-10,000 events. For example:
+The default schedule is `0 3 * * *` (Hermes' configured profile timezone).
+Pass `--schedule '5 3 * * *'` to choose a different schedule and pass the same
+value for removal. Re-run the install command to verify an existing identical
+job or complete a prior install; a same-name mismatch is refused. To roll back,
+repeat the exact paths, interpreter, and schedule with `uninstall` instead of
+`install`; for example:
+
+```bash
+"$DASHBOARD_PYTHON" -m hermes_approval.cleanup_installer uninstall \
+  --profile "$PROFILE" \
+  --hermes-home "$HERMES_HOME" \
+  --hermes "$HERMES_CLI" \
+  --script-source "$DASHBOARD_SRC/approval_cleanup.py" \
+  --interpreter "$DASHBOARD_PYTHON"
+```
+
+It removes only the matching installer job and removes the copied script only
+when its bytes still match the selected source and no remaining job references
+it. Conflicting or edited entries are left untouched.
+
+Repeat for each active profile, changing `PROFILE` for each invocation. The
+script reads optional per-profile `approvals.retention_days` and
+`approvals.max_events` settings from that profile's `config.yaml`; omitted
+settings use 90 days and 10,000 events. For example:
 
 ```yaml
 approvals:
