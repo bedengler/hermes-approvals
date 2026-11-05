@@ -102,28 +102,6 @@ It removes only the matching installer job and removes the copied script only
 when its bytes still match the selected source and no remaining job references
 it. Conflicting or edited entries are left untouched.
 
-### Isolated real Hermes CLI test
-
-Run the end-to-end installer check from this checkout with `uv` and a Hermes
-Agent source checkout available. The test runs Hermes' real CLI entry point in
-a dedicated temporary Python environment, with `HOME`, `HERMES_HOME`, the
-profiles, cron stores, and UV cache under pytest's temporary directory. It
-creates a neighboring profile with an unrelated cron job, then checks install,
-repeat-install idempotence, uninstall, and that the neighboring profile and
-script remain unchanged. It does not invoke the host-installed CLI or touch a
-live profile or cron store.
-
-```bash
-export HERMES_AGENT_REPO="${HERMES_AGENT_REPO:-$HOME/.hermes/hermes-agent}"
-uv run --group test pytest -q tests/test_cleanup_installer.py -k real_cli
-```
-
-The test's temporary launcher runs `hermes_cli.main` from that checkout with
-`uv run --project "$HERMES_AGENT_REPO" --with ruamel.yaml==0.18.16`; this
-keeps the missing host-CLI YAML dependency inside the disposable test runtime.
-Actual result: `1 passed, 3 deselected in 10.54s`. This is isolated CLI
-verification only, not installation into or rollout on a live Hermes host.
-
 Repeat for each active profile, changing `PROFILE` for each invocation. The
 script reads optional per-profile `approvals.retention_days` and
 `approvals.max_events` settings from that profile's `config.yaml`; omitted
@@ -145,3 +123,34 @@ Resolved approvals older than the configured retention are deleted; pending
 approvals are never deleted. Events have no age-based policy: `max_events` is
 their sole retention limit, so an event may outlive its resolved approval row.
 Cleanup success prints the profile, configured limits, and deleted event count.
+
+## Isolated real Hermes CLI test
+
+`tests/test_cleanup_installer.py` runs the installer end to end against Hermes'
+real CLI entry point (not a stub) in a disposable environment: `HOME`,
+`HERMES_HOME`, both profiles, their cron stores, the CLI virtual environment,
+and the uv cache all live under pytest's temporary directory. It creates a
+`sibling-maintenance` job inside `alpha` and a second profile `beta` with its
+own job and script, then checks install, repeat-install idempotence (store
+document and script bytes unchanged), uninstall, that only
+`approvals-retention-cleanup` disappears while the sibling job stays, and that
+`beta` and its script remain unchanged. It never invokes the host-installed CLI
+and never touches a live profile or cron store.
+
+The test needs a Hermes Agent source checkout and `uv`; without either it
+skips with an explicit reason, which is what CI does. Run it locally with:
+
+```bash
+export HERMES_AGENT_REPO="${HERMES_AGENT_REPO:-$HOME/.hermes/hermes-agent}"
+uv run --group test pytest -q tests/test_cleanup_installer.py -k real_cli
+```
+
+Its temporary launcher runs `hermes_cli.main` from that checkout with
+`uv run --locked --project "$HERMES_AGENT_REPO" --with ruamel.yaml==0.18.16
+python -m hermes_cli.main "$@"`, which keeps the host CLI's YAML dependency
+inside the disposable test runtime instead of the host environment. Actual
+result of the command above on a machine with the checkout present:
+`1 passed, 5 deselected in 13.75s`; the full suite with the checkout present is
+`317 passed, 2 skipped`, and without it (CI) `316 passed, 3 skipped`. This is
+isolated CLI verification only, not installation into or rollout on a live
+Hermes host.
