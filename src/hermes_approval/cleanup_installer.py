@@ -34,6 +34,8 @@ def _load_jobs(path: Path) -> list[dict[str, Any]]:
         jobs = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise InstallerError(f"cannot read cron job store {path}: {exc}") from exc
+    if isinstance(jobs, dict):
+        jobs = jobs.get("jobs")
     if not isinstance(jobs, list) or any(not isinstance(job, dict) for job in jobs):
         raise InstallerError(f"cron job store {path} must contain a JSON list of objects")
     return jobs

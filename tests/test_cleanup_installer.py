@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
+import sys
 from argparse import Namespace
 from pathlib import Path
 
@@ -130,43 +132,110 @@ def test_conflicting_named_job_is_preserved(tmp_path, monkeypatch):
     assert json.loads(jobs_path.read_text(encoding="utf-8")) == [existing]
 
 
-def test_actual_hermes_cli_installs_and_removes_only_in_temp_profile(tmp_path):
-    hermes_executable = shutil.which("hermes")
-    if not hermes_executable:
-        pytest.skip("Hermes CLI is not installed; fake-runner tests cover installer safety")
-    assert hermes_executable
+def test_real_cli_installs_idempotently_and_removes_only_its_temp_profile_job(tmp_path):
+    hermes_repo = Path(
+        os.environ.get(
+            "HERMES_AGENT_REPO",
+            str(Path.home() / ".hermes" / "hermes-agent"),
+        )
+    ).expanduser().resolve()
+    assert (hermes_repo / "pyproject.toml").is_file(), (
+        "set HERMES_AGENT_REPO to a Hermes Agent source checkout"
+    )
+    uv_executable = shutil.which("uv")
+    assert uv_executable, "uv is required to run Hermes in an isolated test environment"
+
     root = tmp_path / ".hermes"
-    args = _args(root)
-    args.hermes = Path(hermes_executable)
-    args.script_source = SCRIPT_SOURCE
+    hermes_executable = tmp_path / "hermes-real-cli"
+    hermes_executable.write_text(
+        "#!/bin/sh\n"
+        "exec "
+        + shlex.quote(uv_executable)
+        + " run --locked --project "
+        + shlex.quote(str(hermes_repo))
+        + " --with ruamel.yaml==0.18.16 python -m hermes_cli.main \"$@\"\n",
+        encoding="utf-8",
+    )
+    hermes_executable.chmod(0o755)
     env = {
         **os.environ,
         "HOME": str(root.parent),
         "HERMES_HOME": str(root),
         "HERMES_DISABLE_LAZY_INSTALLS": "1",
+        "UV_PROJECT_ENVIRONMENT": str(tmp_path / "hermes-cli-venv"),
+        "UV_CACHE_DIR": str(tmp_path / "uv-cache"),
     }
-    profile_creation = subprocess.run(
-        [hermes_executable, "profile", "create", "alpha", "--no-alias", "--no-skills"],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=60,
+
+    def run_cli(*command: str) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(
+            [str(hermes_executable), *command],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=180,
+        )
+        assert result.returncode == 0, f"Hermes CLI failed: {result.stderr}"
+        return result
+
+    for profile in ("alpha", "beta"):
+        run_cli("profile", "create", profile, "--no-alias", "--no-skills")
+
+    beta_home = root / "profiles" / "beta"
+    neighbor_script = beta_home / "scripts" / "neighbor.py"
+    neighbor_script.parent.mkdir(parents=True, exist_ok=True)
+    neighbor_script.write_text("print('neighbor')\n", encoding="utf-8")
+    run_cli(
+        "-p",
+        "beta",
+        "cron",
+        "create",
+        "17 4 * * *",
+        "--name",
+        "neighbor-maintenance",
+        "--deliver",
+        "local",
+        "--no-agent",
+        "--script",
+        "neighbor.py",
+        "--interpreter",
+        sys.executable,
     )
-    if profile_creation.returncode and "No module named 'ruamel'" in profile_creation.stderr:
-        pytest.skip("installed Hermes CLI environment is missing ruamel.yaml")
-    assert profile_creation.returncode == 0, profile_creation.stderr
+    neighbor_jobs_path = beta_home / "cron" / "jobs.json"
+    neighbor_jobs_before = json.loads(neighbor_jobs_path.read_text(encoding="utf-8"))
+    neighbor_script_before = neighbor_script.read_bytes()
+
+    args = Namespace(
+        action="install",
+        profile="alpha",
+        hermes_home=root,
+        hermes=hermes_executable,
+        script_source=SCRIPT_SOURCE,
+        interpreter=sys.executable,
+        schedule=cleanup_installer.DEFAULT_SCHEDULE,
+        dry_run=False,
+    )
+    home = root / "profiles" / "alpha"
+    jobs_path = home / "cron" / "jobs.json"
+    script_path = home / "scripts" / cleanup_installer.SCRIPT_NAME
 
     assert "Installed" in cleanup_installer.install(args)
-    home = root / "profiles" / "alpha"
-    jobs = json.loads((home / "cron" / "jobs.json").read_text(encoding="utf-8"))
-    assert len(jobs) == 1
-    assert jobs[0]["no_agent"] is True
-    assert jobs[0]["script"] == cleanup_installer.SCRIPT_NAME
-    assert jobs[0]["schedule_display"] == args.schedule
+    installed_document = json.loads(jobs_path.read_text(encoding="utf-8"))
+    installed = installed_document["jobs"]
+    assert len(installed) == 1
+    assert installed[0]["name"] == cleanup_installer.JOB_NAME
+    assert installed[0]["no_agent"] is True
+    assert installed[0]["script"] == cleanup_installer.SCRIPT_NAME
+    assert installed[0]["schedule_display"] == args.schedule
+    assert script_path.read_bytes() == SCRIPT_SOURCE.read_bytes()
+
     assert "Already installed" in cleanup_installer.install(args)
+    assert json.loads(jobs_path.read_text(encoding="utf-8")) == installed_document
+    assert script_path.read_bytes() == SCRIPT_SOURCE.read_bytes()
 
     args.action = "uninstall"
     assert "Removed only" in cleanup_installer.uninstall(args)
-    assert json.loads((home / "cron" / "jobs.json").read_text(encoding="utf-8")) == []
-    assert not (home / "scripts" / cleanup_installer.SCRIPT_NAME).exists()
+    assert json.loads(jobs_path.read_text(encoding="utf-8"))["jobs"] == []
+    assert not script_path.exists()
+    assert json.loads(neighbor_jobs_path.read_text(encoding="utf-8")) == neighbor_jobs_before
+    assert neighbor_script.read_bytes() == neighbor_script_before

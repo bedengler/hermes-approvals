@@ -102,6 +102,28 @@ It removes only the matching installer job and removes the copied script only
 when its bytes still match the selected source and no remaining job references
 it. Conflicting or edited entries are left untouched.
 
+### Isolated real Hermes CLI test
+
+Run the end-to-end installer check from this checkout with `uv` and a Hermes
+Agent source checkout available. The test runs Hermes' real CLI entry point in
+a dedicated temporary Python environment, with `HOME`, `HERMES_HOME`, the
+profiles, cron stores, and UV cache under pytest's temporary directory. It
+creates a neighboring profile with an unrelated cron job, then checks install,
+repeat-install idempotence, uninstall, and that the neighboring profile and
+script remain unchanged. It does not invoke the host-installed CLI or touch a
+live profile or cron store.
+
+```bash
+export HERMES_AGENT_REPO="${HERMES_AGENT_REPO:-$HOME/.hermes/hermes-agent}"
+uv run --group test pytest -q tests/test_cleanup_installer.py -k real_cli
+```
+
+The test's temporary launcher runs `hermes_cli.main` from that checkout with
+`uv run --project "$HERMES_AGENT_REPO" --with ruamel.yaml==0.18.16`; this
+keeps the missing host-CLI YAML dependency inside the disposable test runtime.
+Actual result: `1 passed, 3 deselected in 10.54s`. This is isolated CLI
+verification only, not installation into or rollout on a live Hermes host.
+
 Repeat for each active profile, changing `PROFILE` for each invocation. The
 script reads optional per-profile `approvals.retention_days` and
 `approvals.max_events` settings from that profile's `config.yaml`; omitted
