@@ -134,7 +134,9 @@ and the uv cache all live under pytest's temporary directory. It creates a
 own job and script, then checks install, repeat-install idempotence (store
 document and script bytes unchanged), uninstall, that only
 `approvals-retention-cleanup` disappears while the sibling job stays, and that
-`beta` and its script remain unchanged. It never invokes the host-installed CLI
+`beta` and its script remain unchanged. Before installation it runs the
+installer's dry-run entry point and snapshots the temporary Hermes home to prove
+that no files or directories changed. It never invokes the host-installed CLI
 and never touches a live profile or cron store.
 
 The test needs a Hermes Agent source checkout and `uv`; without either it

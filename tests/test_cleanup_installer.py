@@ -155,7 +155,7 @@ def _real_cli_prerequisites() -> tuple[Path, str]:
     return hermes_repo, uv_executable
 
 
-def test_real_cli_installs_idempotently_and_removes_only_its_temp_profile_job(tmp_path):
+def test_real_cli_installs_idempotently_and_removes_only_its_temp_profile_job(tmp_path, capsys):
     hermes_repo, uv_executable = _real_cli_prerequisites()
 
     root = tmp_path / ".hermes"
@@ -257,6 +257,26 @@ def test_real_cli_installs_idempotently_and_removes_only_its_temp_profile_job(tm
         dry_run=False,
     )
     script_path = home / "scripts" / cleanup_installer.SCRIPT_NAME
+
+    hermes_home_before_dry_run = {
+        path.relative_to(root): ("directory" if path.is_dir() else path.read_bytes())
+        for path in root.rglob("*")
+    }
+    assert cleanup_installer.main([
+        "install",
+        "--profile", "alpha",
+        "--hermes-home", str(root),
+        "--hermes", str(hermes_executable),
+        "--script-source", str(SCRIPT_SOURCE),
+        "--interpreter", sys.executable,
+        "--dry-run",
+    ]) == 0
+    assert "Would install" in capsys.readouterr().out
+    assert {
+        path.relative_to(root): ("directory" if path.is_dir() else path.read_bytes())
+        for path in root.rglob("*")
+    } == hermes_home_before_dry_run
+
 
     assert "Installed" in cleanup_installer.install(args)
     installed_document = json.loads(jobs_path.read_text(encoding="utf-8"))
