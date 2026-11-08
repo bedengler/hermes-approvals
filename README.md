@@ -57,26 +57,40 @@ The wheel contains the importable `dashboard` adapter package, its
 `manifest.json`, and the compiled `dist/index.js` bundle. A source checkout is
 not required at runtime.
 
-### 2. Install the dashboard plugin payload
+### 2. Install the dashboard plugin payload (operator-invoked)
 
-Hermes discovers the plugin from the active Hermes home. Use the portable
-default below, or set `HERMES_HOME` to the home used by the dashboard process
-before copying the files:
+The dashboard installer copies only the bundled payload into the selected,
+existing Hermes profile. It does not install Python dependencies, edit profile
+configuration, enable the plugin, reload services, or affect any other profile.
+First identify the dashboard Python executable as above and set the Hermes root
+(the root, not a named profile's directory):
 
 ```bash
 export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-PLUGIN_DIR="$HERMES_HOME/plugins/approvals"
+PROFILE="default"                 # or an existing named profile, e.g. alpha
 DASHBOARD_SRC="$("$DASHBOARD_PYTHON" -c 'import dashboard; print(dashboard.__path__[0])')"
-mkdir -p "$PLUGIN_DIR"
-cp -R "$DASHBOARD_SRC/." "$PLUGIN_DIR/"
 ```
 
-This installs both the static dashboard plugin (`manifest.json` and
-`dist/index.js`) and the host adapter (`plugin_api.py`) under
-`${HERMES_HOME:-$HOME/.hermes}/plugins/approvals`. Do not copy an absolute
-developer path into a manifest or host configuration. The copy step must use
-the same `$DASHBOARD_PYTHON` as the package install and verification, so
-`DASHBOARD_SRC` resolves to the payload bundled with the dashboard's package.
+Preview is read-only; inspect its file counts and target before the explicit
+`install` action:
+
+```bash
+"$DASHBOARD_PYTHON" -m hermes_approval.dashboard_installer install \
+  --profile "$PROFILE" --hermes-home "$HERMES_HOME" \
+  --dashboard-source "$DASHBOARD_SRC" --dry-run
+# Deliberate write: repeat the same command without --dry-run.
+"$DASHBOARD_PYTHON" -m hermes_approval.dashboard_installer install \
+  --profile "$PROFILE" --hermes-home "$HERMES_HOME" \
+  --dashboard-source "$DASHBOARD_SRC"
+```
+
+The supported Hermes plugin layout places the payload in
+`$HERMES_HOME[/profiles/$PROFILE]/plugins/approvals/dashboard/`. The installer
+records hashes for exactly the files it writes, refuses to adopt or overwrite
+unowned files, and is idempotent. It does not enable the plugin: use the host's
+normal plugin settings and reload/restart only the dashboard when the operator
+is ready. The host boundary therefore remains manual and opt-in; there is no
+automatic live-host rollout.
 
 ### 3. Bind the adapter to the active profile and canonical auth
 
@@ -155,22 +169,23 @@ actions and does not replace those controls.
 
 ### Uninstall and rollback
 
-To disable first, turn off the `approvals` plugin in the dashboard and reload
-the dashboard. To remove the installed payload, verify the directory is the
-intended plugin directory and then remove only that directory:
+To disable first, turn off the `approvals` plugin through the host's normal
+settings and reload the dashboard. Preview the payload rollback, then run the
+explicit `uninstall` action for the same profile:
 
 ```bash
-export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-PLUGIN_DIR="$HERMES_HOME/plugins/approvals"
-test "${PLUGIN_DIR##*/}" = approvals && rm -rf "$PLUGIN_DIR"
+"$DASHBOARD_PYTHON" -m hermes_approval.dashboard_installer uninstall \
+  --profile "$PROFILE" --hermes-home "$HERMES_HOME" --dry-run
+# After reviewing the preview, deliberately remove only installer-owned files.
+"$DASHBOARD_PYTHON" -m hermes_approval.dashboard_installer uninstall \
+  --profile "$PROFILE" --hermes-home "$HERMES_HOME"
 ```
 
-Uninstall the Python package from the dashboard environment with
-`uv pip uninstall hermes-approval-api`. Back up the profile database before
-removing it; uninstalling the package or static payload does not delete
-`approvals.db` or governance records. Roll back by reinstalling the previous
-package version, restoring the previous plugin payload, and re-enabling only
-after the dashboard has been reloaded.
+Uninstall removes only files whose hashes still match this installer’s ownership
+record, preserves locally changed and unowned files, and prunes only empty
+package directories that this installer created. It does not remove `approvals.db`,
+profile configuration, or the Python package. To roll back a package version, install that previous
+payload explicitly; this installer never restores or modifies the database.
 
 ### Troubleshooting package/runtime mismatches
 
@@ -191,10 +206,11 @@ after the dashboard has been reloaded.
   authorization rejected the request; check the authenticated session and
   host callback. Do not weaken or bypass authentication to address either
   result.
-- **Manifest or bundle not found:** repeat the copy step from that same
-  environment and verify `${PLUGIN_DIR}/manifest.json` and
-  `${PLUGIN_DIR}/dist/index.js` exist. Do not point the host at a checkout-only
-  `dashboard/` path.
+- **Manifest or bundle not found:** verify
+  `${HERMES_HOME}/profiles/${PROFILE}/plugins/approvals/dashboard/manifest.json` and
+  `${HERMES_HOME}/profiles/${PROFILE}/plugins/approvals/dashboard/dist/index.js` exist
+  (for `PROFILE=default`, omit `profiles/${PROFILE}/`). Do not point the host at
+  a checkout-only `dashboard/` path.
 - **Routes missing or duplicated:** verify the host loaded `plugin_api.py`,
   mounted the returned router exactly at `/api/plugins/approvals`, and did not
   add that prefix inside the router.

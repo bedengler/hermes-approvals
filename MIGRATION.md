@@ -19,13 +19,15 @@ automatically wire the live approval queue.
    wheel includes `dashboard/plugin_api.py`, `dashboard/manifest.json`, and
    `dashboard/dist/index.js`, so installation does not depend on a source
    checkout or a separately copied dashboard directory.
-3. On the supported Hermes dashboard host, install the package's dashboard
-   payload under the plugin directory and enable `approvals` through the host's
-   normal plugin settings. The host discovers `dashboard/manifest.json`,
-   imports its declared `api` module, and mounts its module-level `router` at
-   `/api/plugins/approvals`. The adapter obtains the active Hermes profile
-   home and name in the request context so the host's `?profile=` scope selects
-   the matching store, and uses the canonical dashboard authentication checks.
+3. On the supported Hermes dashboard host, use the bundled operator-invoked
+   installer to copy the payload into one explicitly selected existing profile.
+   It writes only `plugins/approvals/dashboard/`; it does not enable the plugin,
+   modify configuration, restart the host, or touch another profile. The host
+   discovers `dashboard/manifest.json`, imports its declared `api` module, and
+   mounts its module-level `router` at `/api/plugins/approvals`. The adapter
+   obtains the active Hermes profile home and name in the request context so the
+   host's `?profile=` scope selects the matching store, and uses canonical
+   dashboard authentication checks.
 4. For a different host without Hermes' manifest loader, resolve the active
    profile and canonical auth callback using that host's runtime APIs, then use
    `dashboard.plugin_api.build_router(store, dashboard_authorize)` and mount it
@@ -38,6 +40,67 @@ discovery/import/`include_router` path in an isolated test home and verifies
 profile binding plus authorization. `docs/host-integration.md` records the
 host revision and exact command. This is source-level integration evidence,
 not a live-host rollout.
+
+## Operator-invoked dashboard payload installer
+
+The installer is a deliberate local package operation, not a deployment. The
+`hermes-approval-api` Python package must already be installed in the same
+interpreter that runs the dashboard. Set that interpreter and the Hermes root,
+then choose exactly one existing profile. For example, with `PROFILE=alpha`:
+
+```bash
+DASHBOARD_PYTHON="/absolute/path/to/the/dashboard/python"
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+PROFILE="alpha"                  # or default
+DASHBOARD_SRC="$("$DASHBOARD_PYTHON" -c 'import dashboard; print(dashboard.__path__[0])')"
+"$DASHBOARD_PYTHON" -m hermes_approval.dashboard_installer install \
+  --profile "$PROFILE" --hermes-home "$HERMES_HOME" \
+  --dashboard-source "$DASHBOARD_SRC" --dry-run
+# Review target and planned counts, then deliberately install:
+"$DASHBOARD_PYTHON" -m hermes_approval.dashboard_installer install \
+  --profile "$PROFILE" --hermes-home "$HERMES_HOME" \
+  --dashboard-source "$DASHBOARD_SRC"
+```
+
+The installer requires the selected profile to exist and writes payload files
+only to `plugins/approvals/dashboard/` in that profile. It refuses existing
+unowned payload files, records hashes for files it owns, and rejects later
+replacement of locally edited owned files. Repeat installation is idempotent.
+It does not enable the plugin, alter host configuration, install Python
+packages, reload/restart Hermes, touch another profile, or delete approval
+data. Enable/reload through the host's normal operator workflow only when
+ready; this remains a manual host boundary with no automatic live rollout.
+
+To preview and then roll back this install, use `uninstall` for the same
+profile; the dry run is again read-only:
+
+```bash
+"$DASHBOARD_PYTHON" -m hermes_approval.dashboard_installer uninstall \
+  --profile "$PROFILE" --hermes-home "$HERMES_HOME" --dry-run
+"$DASHBOARD_PYTHON" -m hermes_approval.dashboard_installer uninstall \
+  --profile "$PROFILE" --hermes-home "$HERMES_HOME"
+```
+
+Uninstall removes only unchanged files listed by its ownership receipt,
+preserves locally changed and unowned files, and prunes only empty directories
+that this installer created. To roll back to an earlier package version, run the install action
+with that earlier payload. `approvals.db`, configuration, and the Python
+package are outside this installer's ownership scope. Automated installer
+coverage uses temporary `HERMES_HOME` fixtures only. Verification from the package
+checkout:
+
+```bash
+uv run --extra test pytest -q tests/test_packaging.py tests/test_supported_hermes_host.py tests/test_cleanup_installer.py
+uv run --extra test pytest -q tests/test_dashboard_installer.py
+```
+
+Actual results: the requested focused command reports `7 passed, 1 skipped in
+19.67s`; the skip is the supported host-source check when `HERMES_AGENT_REPO` is
+unset. The new installer tests report `5 passed in 0.91s`. The host-source check
+separately passed (`1 passed, 1 warning in 2.50s`) against the recorded host
+commit `f2ae4a83a3051f38f6d33f8c71c3c54cb3418ee5` using an isolated source archive
+and temporary `HERMES_HOME`; the warning is the host's existing Starlette/httpx
+`TestClient` deprecation notice. No host profile was modified.
 
 ## Existing approvals
 
