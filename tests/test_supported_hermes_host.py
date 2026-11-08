@@ -4,16 +4,17 @@ Run this test in the Hermes Agent checkout's uv environment with
 HERMES_AGENT_REPO set. It deliberately isolates HERMES_HOME and the bundled
 plugin root before importing the host, so no installed user data is touched.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -31,7 +32,9 @@ def _request(app, headers=()):
             "path": "/api/plugins/approvals/pending",
             "raw_path": b"/api/plugins/approvals/pending",
             "query_string": b"",
-            "headers": [(key.lower().encode(), value.encode()) for key, value in headers],
+            "headers": [
+                (key.lower().encode(), value.encode()) for key, value in headers
+            ],
             "server": ("testserver", 80),
             "client": ("testclient", 12345),
             "root_path": "",
@@ -40,7 +43,9 @@ def _request(app, headers=()):
     )
 
 
-def test_supported_hermes_host_mounts_profile_scoped_approvals(tmp_path, monkeypatch, request):
+def test_supported_hermes_host_mounts_profile_scoped_approvals(
+    tmp_path, monkeypatch, request
+):
     host_repo_value = os.environ.get("HERMES_AGENT_REPO")
     if not host_repo_value:
         pytest.skip("set HERMES_AGENT_REPO and run in that Hermes Agent uv environment")
@@ -60,12 +65,67 @@ def test_supported_hermes_host_mounts_profile_scoped_approvals(tmp_path, monkeyp
     (profile_home / "config.yaml").write_text(
         "plugins:\n  enabled:\n    - approvals\n", encoding="utf-8"
     )
-    shutil.copytree(PROJECT_ROOT / "dashboard", plugin_home / "dashboard")
-    plugins_root = hermes_root / "profiles"
-    worker_home = plugins_root / "workerb"
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(
+            (
+                str(PROJECT_ROOT / "src"),
+                str(PROJECT_ROOT),
+                str(host_repo),
+                os.environ.get("PYTHONPATH", ""),
+            )
+        ),
+        "HERMES_DISABLE_LAZY_INSTALLS": "1",
+    }
+    install_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hermes_approval.dashboard_installer",
+            "install",
+            "--profile",
+            profile_name,
+            "--hermes-home",
+            str(hermes_root),
+            "--source",
+            str(PROJECT_ROOT / "dashboard"),
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert install_result.returncode == 0, install_result.stderr
+    assert "Installed" in install_result.stdout
+    worker_home = hermes_root / "profiles" / "workerb"
     worker_home.mkdir(parents=True)
     (worker_home / ".env").write_text("", encoding="utf-8")
-    (worker_home / "config.yaml").write_text("plugins: {}\n", encoding="utf-8")
+    (worker_home / "config.yaml").write_text(
+        "plugins:\n  enabled:\n    - approvals\n", encoding="utf-8"
+    )
+    worker_install = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hermes_approval.dashboard_installer",
+            "install",
+            "--profile",
+            "workerb",
+            "--hermes-home",
+            str(hermes_root),
+            "--source",
+            str(PROJECT_ROOT / "dashboard"),
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert worker_install.returncode == 0, worker_install.stderr
     empty_bundled_plugins = tmp_path / "empty-bundled-plugins"
     empty_bundled_plugins.mkdir()
 
@@ -76,21 +136,32 @@ def test_supported_hermes_host_mounts_profile_scoped_approvals(tmp_path, monkeyp
     monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
     monkeypatch.syspath_prepend(str(PROJECT_ROOT / "src"))
     monkeypatch.syspath_prepend(str(host_repo))
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join((str(PROJECT_ROOT / "src"), str(PROJECT_ROOT), str(host_repo))),
+    )
 
     # Importing web_server invokes Hermes' own discovery/import/include_router
     # mechanism (_mount_plugin_api_routes), not a package-authored FastAPI app.
-    from hermes_cli import web_server
-    from hermes_cli import web_server_dashboard
     from fastapi.testclient import TestClient
+    from hermes_cli import web_server, web_server_dashboard
 
     plugins = web_server._get_dashboard_plugins(force_rescan=True)
-    approval_plugin = next(plugin for plugin in plugins if plugin["name"] == "approvals")
+    approval_plugin = next(
+        plugin for plugin in plugins if plugin["name"] == "approvals"
+    )
     assert approval_plugin["source"] == "user"
     assert approval_plugin["_api_file"] == "plugin_api.py"
-    assert json.loads((plugin_home / "dashboard" / "manifest.json").read_text())["version"] == "0.1.0"
-    assert web_server_dashboard._plugin_api_mount_skip_reason(
-        approval_plugin, {"approvals"}, set()
-    ) is None
+    assert (
+        json.loads((plugin_home / "dashboard" / "manifest.json").read_text())["version"]
+        == "0.1.0"
+    )
+    assert (
+        web_server_dashboard._plugin_api_mount_skip_reason(
+            approval_plugin, {"approvals"}, set()
+        )
+        is None
+    )
 
     adapter = sys.modules["hermes_dashboard_plugin_approvals"]
     expected_store = profile_home / "approvals.db"
@@ -103,7 +174,10 @@ def test_supported_hermes_host_mounts_profile_scoped_approvals(tmp_path, monkeyp
     # validators, while the mounted route also runs behind host middleware.
     web_server.app.state.auth_required = False
     assert adapter._authorize(
-        _request(web_server.app, [(web_server._SESSION_HEADER_NAME, web_server._SESSION_TOKEN)])
+        _request(
+            web_server.app,
+            [(web_server._SESSION_HEADER_NAME, web_server._SESSION_TOKEN)],
+        )
     )
     assert not adapter._authorize(_request(web_server.app))
 
@@ -115,14 +189,12 @@ def test_supported_hermes_host_mounts_profile_scoped_approvals(tmp_path, monkeyp
             "/api/plugins/approvals/pending",
             headers={web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN},
         )
-        worker_response = client.get(
+        unauthorized_profile = client.get(
             "/api/plugins/approvals/pending",
             params={"profile": "workerb"},
             headers={web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN},
         )
     assert authorized.status_code == 200
     assert authorized.json() == {"profile": profile_name, "items": []}
-    assert worker_response.status_code == 200
-    assert worker_response.json() == {"profile": "workerb", "items": []}
-    assert (worker_home / "approvals.db").is_file()
-    assert (worker_home / "approvals.db") != expected_store
+    assert unauthorized_profile.status_code == 403
+    assert not (worker_home / "approvals.db").exists()

@@ -1,8 +1,57 @@
 # Migration and host integration
 
 This repository deliberately stops at a reusable package boundary. It does
-not modify the Hermes installation or host-managed profiles and does not
-automatically wire the live approval queue.
+not modify the Hermes installation or any host-managed profile unless an
+operator explicitly invokes the profile-scoped payload installer below; it
+does not automatically wire the live approval queue.
+
+## Dashboard payload installer
+
+Hermes provides general `hermes plugins install/update/remove` commands for Git
+plugins, but that is not a direct installer for this Python package's wheel
+payload and does not provide a dry-run plus rollback transaction for the
+profile-local dashboard files. This package supplies a narrow operator CLI for
+copying only the bundled `dashboard` package payload into Hermes' existing
+per-profile plugin directory. It requires explicit `--hermes-home` and
+`--profile` arguments, never infers the operator's target, and does not enable
+the plugin, edit profile configuration, restart a service, or activate cron
+jobs.
+
+Choose the same Python executable that runs the dashboard and use its installed
+package payload. The following command previews a named profile without creating
+or changing files; after review, repeat it without `--dry-run`:
+
+```bash
+DASHBOARD_PYTHON="/absolute/path/to/the/dashboard/python"
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+PROFILE=alpha                    # or default
+DASHBOARD_SRC="$("$DASHBOARD_PYTHON" -c 'import dashboard; print(dashboard.__path__[0])')"
+"$DASHBOARD_PYTHON" -m hermes_approval.dashboard_installer install \
+  --profile "$PROFILE" \
+  --hermes-home "$HERMES_HOME" \
+  --source "$DASHBOARD_SRC" \
+  --dry-run
+```
+
+Repeat-install is idempotent. Upgrades preserve a rollback snapshot for each
+previous package payload. To roll back exactly one step, run:
+
+```bash
+"$DASHBOARD_PYTHON" -m hermes_approval.dashboard_installer rollback \
+  --profile "$PROFILE" \
+  --hermes-home "$HERMES_HOME"
+```
+
+For a first install, rollback removes only the approvals dashboard directory;
+for an upgrade, it restores the previous dashboard payload. Rollback refuses if
+the current payload was edited outside the installer. State and snapshots are
+kept under the selected profile's `plugins/approvals/.hermes-approval-api-installer/`.
+The CLI preserves neighboring plugins and files and rejects symlinked paths.
+Enable `approvals` and reload the dashboard separately through the host's normal
+operator controls. `tests/test_dashboard_installer.py` runs the actual CLI
+against disposable Hermes homes; `tests/test_supported_hermes_host.py` passes
+that installed payload through Hermes' real plugin discovery and mount path.
+These are local temporary-home checks, not a live-host rollout.
 
 ## Host adapter
 
@@ -19,13 +68,15 @@ automatically wire the live approval queue.
    wheel includes `dashboard/plugin_api.py`, `dashboard/manifest.json`, and
    `dashboard/dist/index.js`, so installation does not depend on a source
    checkout or a separately copied dashboard directory.
-3. On the supported Hermes dashboard host, install the package's dashboard
-   payload under the plugin directory and enable `approvals` through the host's
-   normal plugin settings. The host discovers `dashboard/manifest.json`,
-   imports its declared `api` module, and mounts its module-level `router` at
-   `/api/plugins/approvals`. The adapter obtains the active Hermes profile
-   home and name in the request context so the host's `?profile=` scope selects
-   the matching store, and uses the canonical dashboard authentication checks.
+3. On the supported Hermes dashboard host, use the package's explicit
+   profile-scoped dashboard installer documented above to copy the payload under
+   the selected profile's `plugins/approvals/dashboard/` directory. Then enable
+   `approvals` through the host's normal plugin settings. The host discovers
+   `dashboard/manifest.json`, imports its declared `api` module, and mounts its
+   module-level `router` at `/api/plugins/approvals`. The adapter obtains the
+   active Hermes profile home and name in the request context so the
+   `?profile=` scope selects the matching store, and uses the canonical
+   dashboard authentication checks.
 4. For a different host without Hermes' manifest loader, resolve the active
    profile and canonical auth callback using that host's runtime APIs, then use
    `dashboard.plugin_api.build_router(store, dashboard_authorize)` and mount it

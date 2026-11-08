@@ -18,6 +18,7 @@ def test_wheel_contains_documented_dashboard_payload(tmp_path: Path):
         names = set(wheel.namelist())
         manifest = json.loads(wheel.read("dashboard/manifest.json"))
     assert {
+        "hermes_approval/dashboard_installer.py",
         "dashboard/__init__.py",
         "dashboard/approval_cleanup.py",
         "dashboard/plugin_api.py",

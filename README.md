@@ -1,9 +1,10 @@
 # Hermes Approval API
 
 Standalone, profile-scoped approval API foundation for a Hermes dashboard
-integration. It is intentionally **not** a patch to Hermes core: this
-repository does not publish, create remotes, execute approvals, restart
-services, or modify the Hermes installation or any host-managed profile.
+integration. It is intentionally **not** a patch to Hermes core: it does not
+publish, create remotes, execute approvals, restart services, or modify a Hermes
+profile unless an operator explicitly invokes the profile-scoped installer
+below.
 
 ## Installation and activation
 
@@ -59,24 +60,45 @@ not required at runtime.
 
 ### 2. Install the dashboard plugin payload
 
-Hermes discovers the plugin from the active Hermes home. Use the portable
-default below, or set `HERMES_HOME` to the home used by the dashboard process
-before copying the files:
+Hermes discovers the plugin from the active profile's plugin directory. Set the
+exact Hermes root and profile that the dashboard process serves (`default` uses
+the root itself; a named profile uses `profiles/<name>`). The installer
+requires both values explicitly and only writes the dashboard payload for that
+profile. Preview it first:
 
 ```bash
 export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-PLUGIN_DIR="$HERMES_HOME/plugins/approvals"
+PROFILE=default                    # or an existing profile, e.g. alpha
 DASHBOARD_SRC="$("$DASHBOARD_PYTHON" -c 'import dashboard; print(dashboard.__path__[0])')"
-mkdir -p "$PLUGIN_DIR"
-cp -R "$DASHBOARD_SRC/." "$PLUGIN_DIR/"
+"$DASHBOARD_PYTHON" -m hermes_approval.dashboard_installer install \
+  --profile "$PROFILE" \
+  --hermes-home "$HERMES_HOME" \
+  --source "$DASHBOARD_SRC" \
+  --dry-run
 ```
 
-This installs both the static dashboard plugin (`manifest.json` and
-`dist/index.js`) and the host adapter (`plugin_api.py`) under
-`${HERMES_HOME:-$HOME/.hermes}/plugins/approvals`. Do not copy an absolute
-developer path into a manifest or host configuration. The copy step must use
-the same `$DASHBOARD_PYTHON` as the package install and verification, so
-`DASHBOARD_SRC` resolves to the payload bundled with the dashboard's package.
+After inspecting the target and version, repeat the same command without
+`--dry-run` to install. Re-running is idempotent. The installer writes the
+payload at `<selected-profile-home>/plugins/approvals/dashboard/`, preserves
+sibling plugins and profile files, and refuses a different plugin or edits made
+after its last install. It does not enable the plugin, change `config.yaml`, or
+restart the dashboard; activation and reload remain explicit operator steps.
+The source must come from the same `$DASHBOARD_PYTHON` used to install and verify
+the wheel, so it resolves to the payload bundled with the dashboard package.
+
+Use this to roll back one install/upgrade step at a time:
+
+```bash
+"$DASHBOARD_PYTHON" -m hermes_approval.dashboard_installer rollback \
+  --profile "$PROFILE" \
+  --hermes-home "$HERMES_HOME"
+```
+
+A first-install rollback removes only the installed approvals dashboard
+payload. An upgrade rollback restores the previous payload. The installer keeps
+its rollback snapshots in its own hidden state directory under the selected
+`plugins/approvals` plugin root; it never removes a sibling plugin. Python
+distribution installation is separate and is not undone by payload rollback.
 
 ### 3. Bind the adapter to the active profile and canonical auth
 
@@ -153,17 +175,15 @@ confirmation. They remain subject to the host's existing policy and audit
 controls; installing this plugin is not permission to approve governance
 actions and does not replace those controls.
 
-### Uninstall and rollback
+### Rollback and removal
 
-To disable first, turn off the `approvals` plugin in the dashboard and reload
-the dashboard. To remove the installed payload, verify the directory is the
-intended plugin directory and then remove only that directory:
-
-```bash
-export HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-PLUGIN_DIR="$HERMES_HOME/plugins/approvals"
-test "${PLUGIN_DIR##*/}" = approvals && rm -rf "$PLUGIN_DIR"
-```
+To disable first, turn off the `approvals` plugin through dashboard settings and
+reload the dashboard. To undo the most recent installer change, use the
+profile-scoped `rollback` command in section 2; it restores the prior dashboard
+payload (or removes the first install) without touching sibling plugins. It
+refuses to discard dashboard files changed after the install. The rollback
+history is local to that explicit Hermes profile. Removing the Python package
+from the dashboard environment is a separate operator action.
 
 Uninstall the Python package from the dashboard environment with
 `uv pip uninstall hermes-approval-api`. Back up the profile database before
