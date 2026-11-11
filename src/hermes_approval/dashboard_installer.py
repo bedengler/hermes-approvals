@@ -214,6 +214,74 @@ def _current_check(dashboard: Path, state: dict[str, Any] | None) -> str | None:
     return current
 
 
+def _payload_differences(source: Path, target: Path) -> dict[str, list[str]]:
+    expected_files = {
+        child.relative_to(source).as_posix(): child
+        for child in source.rglob("*")
+        if child.is_file()
+        and "__pycache__" not in child.parts
+        and child.suffix != ".pyc"
+    }
+    actual_files = {
+        child.relative_to(target).as_posix(): child
+        for child in target.rglob("*")
+        if child.is_file()
+        and "__pycache__" not in child.parts
+        and child.suffix != ".pyc"
+    }
+    missing = sorted(expected_files.keys() - actual_files.keys())
+    unexpected = sorted(actual_files.keys() - expected_files.keys())
+    changed = sorted(
+        relative
+        for relative in expected_files.keys() & actual_files.keys()
+        if expected_files[relative].read_bytes() != actual_files[relative].read_bytes()
+    )
+    return {
+        "missing_files": missing,
+        "changed_files": changed,
+        "unexpected_files": unexpected,
+    }
+
+
+def status(hermes_home: Path, profile: str, source: Path) -> dict[str, Any]:
+    """Report the selected profile's dashboard state without modifying it."""
+    _, dashboard, state_dir = _paths(hermes_home, profile)
+    source_dir, _ = _source_payload(source)
+    state = _load_state(state_dir / STATE_FILE_NAME)
+    report: dict[str, Any] = {
+        "status": "absent",
+        "profile": profile,
+        "target": str(dashboard),
+        "missing_files": [],
+        "changed_files": [],
+        "unexpected_files": [],
+        "reasons": [],
+    }
+
+    if not dashboard.exists():
+        if state is not None:
+            report["status"] = "drift"
+            report["missing_files"] = ["<dashboard directory>"]
+            report["reasons"] = ["installer state exists but the dashboard directory is missing"]
+        return report
+
+    _validate_tree(dashboard)
+    report.update(_payload_differences(source_dir, dashboard))
+    if state is None:
+        report["status"] = "drift"
+        report["reasons"].append("dashboard exists without installer state")
+    elif _digest(dashboard) != state["current_digest"]:
+        report["status"] = "drift"
+        report["reasons"].append("dashboard differs from the installer-recorded digest")
+
+    if report["missing_files"] or report["changed_files"]:
+        report["status"] = "drift"
+        report["reasons"].append("dashboard files differ from the selected package source")
+    if report["status"] != "drift":
+        report["status"] = "installed-and-matching"
+    return report
+
+
 def install(
     hermes_home: Path, profile: str, source: Path, *, dry_run: bool = False
 ) -> str:
@@ -353,7 +421,7 @@ def rollback(hermes_home: Path, profile: str) -> str:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("install", "rollback"))
+    parser.add_argument("action", choices=("install", "rollback", "status"))
     parser.add_argument(
         "--profile",
         required=True,
@@ -368,7 +436,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--source",
         type=Path,
-        help="dashboard package directory containing manifest.json (required for install)",
+        help="dashboard package directory containing manifest.json (required for install/status)",
     )
     parser.add_argument(
         "--dry-run",
@@ -387,12 +455,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             message = install(
                 args.hermes_home, args.profile, args.source, dry_run=args.dry_run
             )
-        else:
+        elif args.action == "rollback":
             if args.dry_run:
                 raise InstallerError(
                     "--dry-run is supported for install; rollback only accepts an explicit action"
                 )
             message = rollback(args.hermes_home, args.profile)
+        else:
+            if args.source is None:
+                raise InstallerError("--source is required for status")
+            if args.dry_run:
+                raise InstallerError("--dry-run is not applicable to status")
+            report = status(args.hermes_home, args.profile, args.source)
+            print(json.dumps(report, sort_keys=True))
+            return 0
     except (InstallerError, OSError, shutil.Error) as exc:
         print(f"Dashboard installer failed: {exc}", file=sys.stderr)
         return 1

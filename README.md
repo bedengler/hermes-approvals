@@ -86,6 +86,24 @@ restart the dashboard; activation and reload remain explicit operator steps.
 The source must come from the same `$DASHBOARD_PYTHON` used to install and verify
 the wheel, so it resolves to the payload bundled with the dashboard package.
 
+Check the selected profile without changing it (the report is JSON and compares
+the installed files both with installer state and with this package source):
+
+```bash
+"$DASHBOARD_PYTHON" -m hermes_approval.dashboard_installer status \
+  --profile "$PROFILE" \
+  --hermes-home "$HERMES_HOME" \
+  --source "$DASHBOARD_SRC"
+```
+
+The `status` field is `absent`, `installed-and-matching`, or `drift`. The JSON
+lists missing, changed, and unexpected payload files plus drift reasons. An extra
+operator file preserved and recorded by the installer is reported as unexpected
+but does not mark an otherwise matching install as drift. The command is
+read-only: it does not create installer state, payload files, or rollback
+snapshots. Its behavior and filesystem immutability are tested with
+`uv run --group test pytest tests/test_dashboard_installer.py -q`.
+
 Use this to roll back one install/upgrade step at a time:
 
 ```bash
