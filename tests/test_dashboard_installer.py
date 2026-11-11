@@ -20,6 +20,35 @@ def _tree_snapshot(root: Path) -> dict[str, bytes | None]:
     }
 
 
+def _filesystem_snapshot(root: Path) -> dict[str, tuple]:
+    """Capture names, types, metadata, and bytes to prove read-only commands."""
+    paths = [root] if root.exists() or root.is_symlink() else []
+    if root.is_dir() and not root.is_symlink():
+        paths.extend(sorted(root.rglob("*")))
+    snapshot = {}
+    for path in paths:
+        info = path.lstat()
+        relative = "." if path == root else path.relative_to(root).as_posix()
+        if path.is_symlink():
+            payload = os.readlink(path)
+            kind = "symlink"
+        elif path.is_dir():
+            payload = None
+            kind = "directory"
+        else:
+            payload = path.read_bytes()
+            kind = "file"
+        snapshot[relative] = (
+            kind,
+            info.st_mode,
+            info.st_mtime_ns,
+            info.st_size,
+            info.st_ino,
+            payload,
+        )
+    return snapshot
+
+
 def _cli(
     root: Path, profile: str, action: str, source: Path = DASHBOARD_SOURCE, *flags: str
 ):
@@ -55,6 +84,10 @@ def _cli(
         text=True,
         timeout=30,
     )
+
+
+def _status(root: Path, profile: str, source: Path = DASHBOARD_SOURCE):
+    return _cli(root, profile, "status", source)
 
 
 def _make_source(tmp_path: Path, version: str) -> Path:
@@ -229,3 +262,127 @@ def test_cli_rejects_symlinked_profile_ancestors(tmp_path):
     assert result.returncode != 0
     assert "symlink" in result.stderr.lower()
     assert list(outside.iterdir()) == []
+
+
+def test_status_reports_absent_without_creating_or_touching_home(tmp_path):
+    home = tmp_path / "disposable-hermes-home"
+    before = _filesystem_snapshot(home)
+
+    result = _status(home, "alpha")
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["status"] == "absent"
+    assert report["profile"] == "alpha"
+    assert report["missing_files"] == []
+    assert _filesystem_snapshot(home) == before == {}
+
+
+def test_status_reports_matching_installer_payload_and_preserves_all_files(tmp_path):
+    home = tmp_path / "disposable-hermes-home"
+    installed = _cli(home, "alpha", "install")
+    assert installed.returncode == 0, installed.stderr
+    before = _filesystem_snapshot(home)
+
+    result = _status(home, "alpha")
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["status"] == "installed-and-matching"
+    assert report["profile"] == "alpha"
+    assert report["missing_files"] == []
+    assert report["changed_files"] == []
+    assert report["unexpected_files"] == []
+    assert _filesystem_snapshot(home) == before
+
+
+def test_status_treats_installer_preserved_operator_files_as_matching(tmp_path):
+    home = tmp_path / "disposable-hermes-home"
+    target = home / "profiles" / "alpha" / "plugins" / "approvals" / "dashboard"
+    target.mkdir(parents=True)
+    (target / "manifest.json").write_text(
+        json.dumps({"name": "approvals", "version": "operator-installed"}),
+        encoding="utf-8",
+    )
+    (target / "local-note.txt").write_text("operator content\n", encoding="utf-8")
+    installed = _cli(home, "alpha", "install")
+    assert installed.returncode == 0, installed.stderr
+    before = _filesystem_snapshot(home)
+
+    result = _status(home, "alpha")
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["status"] == "installed-and-matching"
+    assert report["unexpected_files"] == ["local-note.txt"]
+    assert report["reasons"] == []
+    assert _filesystem_snapshot(home) == before
+
+
+def test_status_reports_modified_and_missing_files_without_repairing_them(tmp_path):
+    home = tmp_path / "disposable-hermes-home"
+    installed = _cli(home, "alpha", "install")
+    assert installed.returncode == 0, installed.stderr
+    target = home / "profiles" / "alpha" / "plugins" / "approvals" / "dashboard"
+    (target / "manifest.json").write_text("operator edit\n", encoding="utf-8")
+    (target / "plugin_api.py").unlink()
+    before = _filesystem_snapshot(home)
+
+    result = _status(home, "alpha")
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["status"] == "drift"
+    assert report["missing_files"] == ["plugin_api.py"]
+    assert report["changed_files"] == ["manifest.json"]
+    assert _filesystem_snapshot(home) == before
+
+
+def test_status_is_profile_scoped_and_does_not_create_installer_state(tmp_path):
+    home = tmp_path / "disposable-hermes-home"
+    alpha_install = _cli(home, "alpha", "install")
+    assert alpha_install.returncode == 0, alpha_install.stderr
+    beta = home / "profiles" / "beta"
+    beta.mkdir(parents=True)
+    (beta / "keep.txt").write_text("beta data\n", encoding="utf-8")
+    before = _filesystem_snapshot(home)
+
+    result = _status(home, "beta")
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["status"] == "absent"
+    assert _filesystem_snapshot(home) == before
+
+
+def test_status_reports_missing_dashboard_directory_without_recreating_it(tmp_path):
+    home = tmp_path / "disposable-hermes-home"
+    installed = _cli(home, "alpha", "install")
+    assert installed.returncode == 0, installed.stderr
+    target = home / "profiles" / "alpha" / "plugins" / "approvals" / "dashboard"
+    shutil.rmtree(target)
+    before = _filesystem_snapshot(home)
+
+    result = _status(home, "alpha")
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["status"] == "drift"
+    assert report["missing_files"] == ["<dashboard directory>"]
+    assert _filesystem_snapshot(home) == before
+
+
+def test_status_refuses_symlinked_profile_path_without_touching_either_tree(tmp_path):
+    home = tmp_path / "disposable-hermes-home"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    home.mkdir()
+    (home / "profiles").symlink_to(outside, target_is_directory=True)
+    before_home = _filesystem_snapshot(home)
+    before_outside = _filesystem_snapshot(outside)
+
+    result = _status(home, "alpha")
+
+    assert result.returncode != 0
+    assert "symlink" in result.stderr.lower()
+    assert _filesystem_snapshot(home) == before_home
+    assert _filesystem_snapshot(outside) == before_outside
