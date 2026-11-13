@@ -118,6 +118,7 @@ def create_router(
     authorize: Callable[[Any], bool],
     governance_store: GovernanceApprovalStore | None = None,
     governance_decision_service: GovernanceDecisionService | None = None,
+    allow_decisions: bool = True,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -147,7 +148,6 @@ def create_router(
         items = governance_store.history(limit) if governance_store else []
         return {"items": [GovernanceApprovalDTO(**item) for item in items]}
 
-    @router.post("/governance/{approval_id}/respond", response_model=GovernanceApprovalDTO)
     def governance_respond(request: Request, approval_id: str, body: GovernanceResponseBody):
         guard(request)
         if governance_decision_service is None:
@@ -162,7 +162,6 @@ def create_router(
         except GovernanceApprovalConflict as exc:
             raise HTTPException(409, str(exc))
 
-    @router.post("/{request_id}/respond", response_model=ApprovalDTO)
     def respond(request: Request, request_id: str, body: ResponseBody):
         guard(request)
         try:
@@ -171,6 +170,20 @@ def create_router(
             raise HTTPException(404, "approval not found")
         except ApprovalConflict as exc:
             raise HTTPException(409, str(exc))
+
+    if allow_decisions:
+        router.add_api_route(
+            "/governance/{approval_id}/respond",
+            governance_respond,
+            methods=["POST"],
+            response_model=GovernanceApprovalDTO,
+        )
+        router.add_api_route(
+            "/{request_id}/respond",
+            respond,
+            methods=["POST"],
+            response_model=ApprovalDTO,
+        )
 
     @router.get("/events")
     def events(request: Request, after_id: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=MAX_PAGE_SIZE)):

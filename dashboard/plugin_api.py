@@ -4,21 +4,28 @@ The supported Hermes dashboard host imports this module's ``router`` from the
 manifest's ``api`` field. Its store is bound to the active profile home, and
 authorization delegates to the host's canonical dashboard checks.
 """
+from os import environ
 from pathlib import Path
 from threading import RLock
 
 from hermes_approval.api import create_router
-from hermes_approval.governance import GovernanceApprovalStore, GovernanceDecisionService
+from hermes_approval.governance import GovernanceApprovalStore
 from hermes_approval.store import ApprovalStore
 
 
-def build_router(store, dashboard_authorize, governance_path=None, governance_decide=None):
-    governance = GovernanceApprovalStore(governance_path) if governance_path else None
-    decision_service = None
-    if governance and governance_decide:
-        decision_service = GovernanceDecisionService(governance, governance_decide)
-    return create_router(store, authorize=dashboard_authorize, governance_store=governance,
-                         governance_decision_service=decision_service)
+def build_router(store, dashboard_authorize, governance_path=None):
+    if governance_path is None:
+        governance_home = Path(
+            environ.get("HERMES_GOVERNANCE_HOME", str(Path.home() / ".hermes-governance"))
+        ).expanduser()
+        governance_path = governance_home / "approvals.jsonl"
+    governance = GovernanceApprovalStore(governance_path)
+    return create_router(
+        store,
+        authorize=dashboard_authorize,
+        governance_store=governance,
+        allow_decisions=False,
+    )
 
 
 def _authorize(connection):

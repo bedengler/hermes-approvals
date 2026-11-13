@@ -185,13 +185,13 @@ the host mount is missing. `GET /events` and the event WebSocket are also
 available as listed in the API contract below.
 
 Runtime command approvals and governance approvals are different workflows.
-Runtime approval responses resolve an approval request and this package never
-executes a shell command. Governance actions delegate to the existing Hermes
-governance decision function and require the dashboard authorization callback,
-the exact approval ID, pending/TTL checks, and the UI's explicit second
-confirmation. They remain subject to the host's existing policy and audit
-controls; installing this plugin is not permission to approve governance
-actions and does not replace those controls.
+The dashboard page is read-only: users inspect pending/history views and make
+approval or denial decisions in the existing CLI workflow. The reusable API
+router remains capable of decisions for explicitly integrated non-dashboard
+clients, but `dashboard.plugin_api` mounts it with decision routes disabled and
+the dashboard bundle contains no decision controls or POST calls. Installing
+the dashboard is not permission to approve or deny anything and does not replace
+the host's authorization or audit controls.
 
 ### Rollback and removal
 
@@ -282,8 +282,12 @@ required to use this plugin.
 ## API contract
 
 The host mounts the router at `/api/plugins/approvals`. These are router-relative
-paths; do not add the prefix twice:
+paths; do not add the prefix twice. The reusable `create_router()` includes
+mutation routes by default for non-dashboard API clients. The Hermes dashboard
+adapter sets `allow_decisions=False`, so its mounted router exposes only the
+read operations below (plus events); it has no decision POST routes.
 
+Reusable API routes:
 - `GET /api/plugins/approvals/pending?limit=1..500`
 - `GET /api/plugins/approvals/history?limit=1..500`
 - `POST /api/plugins/approvals/{request_id}/respond`
@@ -318,18 +322,16 @@ responses, or event payloads. Limits are positive and bounded; no unbounded or
   The WebSocket checks the callback before each polling pass, but revocation
   behavior still depends on the host callback reflecting the live session
   state; live host middleware integration is outside this package's tests.
- - Governance decisions are separately scoped from runtime command approvals.
- The host adapter injects the existing governance module's `decide` function;
- the HTTP handler never invokes a shell command. Decisions require the
- dashboard authorization callback, exact `approval_id`, pending/TTL checks,
- and return `404` for unknown IDs or `409` for expired/already-decided IDs.
- The UI displays an explicit second confirmation containing the exact ID, gate,
- target, expiry, selected decision, and server-redacted rationale. Approve/Deny
- controls and Refresh expose pointer and keyboard-focus affordances. Refresh is
- disabled while loading and reports loading, last-refresh/no-change, empty, and
- safe error states. Governance actions show success, stale/expired, not-found,
- and generic failure outcomes, then refresh pending/history without claiming a
- change when none occurred.
+- Governance decisions are separately scoped from runtime command approvals.
+  The reusable API can delegate to the existing governance module's `decide`
+  function for explicitly integrated non-dashboard clients; that handler never
+  invokes a shell command and enforces the exact `approval_id`, pending/TTL
+  checks, and `404`/`409` outcomes. The Hermes dashboard adapter does not inject
+  a decision function and disables both runtime and governance decision routes.
+  Its UI is read-only and contains no Approve/Deny controls or decision POSTs;
+  users make dashboard-related approval/denial decisions through the existing
+  CLI workflow. Refresh is disabled while loading and reports loading,
+  last-refresh/no-change, empty, and safe error states.
 - Responses use opaque request IDs and compare-and-swap version checks. The
   approval mutation and `approval.resolved` event insert commit in one SQLite
   transaction, with database busy handling and profile scoping.
